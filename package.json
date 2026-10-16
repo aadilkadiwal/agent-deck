@@ -1,0 +1,13 @@
+{
+  "name": "agent-deck",
+  "version": "1.0.0",
+  "description": "A macOS menu bar deck for your coding agents: answer Claude Code and Codex prompts from the menu bar, see every session and your usage limits.",
+  "bin": { "agent-deck": "npx.mjs" },
+  "files": ["npx.mjs"],
+  "os": ["darwin"],
+  "engines": { "node": ">=16" },
+  "keywords": ["claude", "claude-code", "codex", "gemini", "macos", "menubar", "agents", "usage-limits"],
+  "repository": { "type": "git", "url": "git+https://github.com/aadilkadiwal/agent-deck.git" },
+  "homepage": "https://github.com/aadilkadiwal/agent-deck",
+  "license": "MIT"
+}
