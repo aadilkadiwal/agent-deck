@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentDeck"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp scripts/hook.py "$APP/Contents/Resources/hook.py"   # Settings → Health repairs hooks with it
+cp /System/Library/Sounds/Glass.aiff "$APP/Contents/Resources/"   # macOS plays custom notification sounds only from the app bundle
 
 # Ad-hoc signature: enough for a locally built app to run and to register "Open at login".
 codesign --force --sign - "$APP" >/dev/null

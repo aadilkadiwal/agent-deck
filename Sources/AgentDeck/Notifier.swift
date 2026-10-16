@@ -89,14 +89,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             (title, body, category) = ("\(name) asks", r.questions.map(\.question).joined(separator: "\n"), nil)
         }
         post(id: "approval-\(r.id)", title: title, body: String(body.prefix(300)), sessionId: r.sessionId,
-             category: category, info: ["approvalId": r.id])
+             category: category, info: ["approvalId": r.id], sound: UNNotificationSound(named: UNNotificationSoundName("Glass.aiff")))
     }
 
     func approvalDone(_ id: Int) {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["approval-\(id)"])
     }
 
-    private func post(id: String, title: String, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:]) {
+    private func post(id: String, title: String, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:],
+                      sound: UNNotificationSound = .default) {
         let center = UNUserNotificationCenter.current()
         if !asked {
             asked = true
@@ -105,7 +106,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        content.sound = sound
         var userInfo = info
         if let sessionId { userInfo["sessionId"] = sessionId }
         content.userInfo = userInfo

@@ -31,6 +31,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var refreshing = false
     @Published private(set) var storage: StorageSummary?
     @Published private(set) var approvals: [ApprovalRequest] = []
+    /// Answered cards stay a moment to show what was sent, then leave.
+    @Published private(set) var outcomes: [Int: ApprovalAnswer] = [:]
     @Published private(set) var activity: [String: Activity] = [:]
     @Published private(set) var busySince: [String: Date] = [:]
     @Published private(set) var branches: [String: String] = [:]
@@ -398,11 +400,20 @@ final class AppModel: ObservableObject {
     }
 
     func answer(_ id: Int, _ a: ApprovalAnswer) {
+        guard outcomes[id] == nil else { return }
         approvalServer?.answer(id, a)
-        removeApproval(id)
+        guard a != .terminal, approvals.contains(where: { $0.id == id }) else { removeApproval(id); return }
+        outcomes[id] = a
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        notifier.approvalDone(id)
+        updateApprovalUI()
+        Task { try? await Task.sleep(nanoseconds: 700_000_000); removeApproval(id) }
     }
 
+    var pendingApprovals: [ApprovalRequest] { approvals.filter { outcomes[$0.id] == nil } }
+
     private func removeApproval(_ id: Int) {
+        outcomes[id] = nil
         guard approvals.contains(where: { $0.id == id }) else { return }
         approvals.removeAll { $0.id == id }
         notifier.approvalDone(id)
@@ -410,12 +421,12 @@ final class AppModel: ObservableObject {
     }
 
     private func answerWithHotkey(allow: Bool) {
-        guard let r = approvals.first(where: { $0.kind == .permission }) else { return }
+        guard let r = pendingApprovals.first(where: { $0.kind == .permission }) else { return }
         answer(r.id, allow ? .allow(always: false) : .deny)
     }
 
     private func updateApprovalUI() {
-        hotkeys.setEnabled(approvals.contains { $0.kind == .permission })
+        hotkeys.setEnabled(pendingApprovals.contains { $0.kind == .permission })
     }
 
     /// Claude Code doesn't stop the hook when you answer in the terminal. Once the session's pid file
