@@ -22,8 +22,16 @@ public struct LiveSession: Identifiable, Equatable, Sendable {
     /// nothing. `claude stop` can't stop it ("no job matching"); `claude rm` clears it, history stays.
     public var isLeftover: Bool { kind == .background && pid == nil }
     public var waitingFor: String? = nil
+    public var agent: Agent = .claude
     public var shortId: String { String(sessionId.prefix(8)) }
     public var phoneURL: URL? { bridgeSessionId.flatMap { URL(string: "https://claude.ai/code/\($0)") } }
+}
+
+extension LiveSession {
+    public init(agent: Agent, sessionId: String, pid: Int32?, cwd: String, state: State) {
+        self.init(sessionId: sessionId, pid: pid, cwd: cwd, name: (cwd as NSString).lastPathComponent, kind: .interactive,
+                  state: state, startedAt: Date(), bridgeSessionId: nil, agent: agent)
+    }
 }
 
 public enum LiveSessions {

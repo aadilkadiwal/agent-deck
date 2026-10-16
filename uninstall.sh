@@ -1,12 +1,12 @@
 #!/bin/bash
-# Removes Session Bar and puts your original status line back.
+# Removes Agent Deck, puts your original status line back and removes its prompt hooks.
 set -euo pipefail
 
-DATA_DIR="$HOME/.claude/session-bar"
+DATA_DIR="$HOME/.claude/agent-deck"
 SETTINGS="$HOME/.claude/settings.json"
 
-pkill -x SessionBar 2>/dev/null || true
-rm -rf "/Applications/Session Bar.app" "$HOME/Applications/Session Bar.app"
+pkill -x AgentDeck 2>/dev/null || true
+rm -rf "/Applications/Agent Deck.app" "$HOME/Applications/Agent Deck.app"
 echo "✓ App removed"
 
 if [ -f "$SETTINGS" ]; then
@@ -30,5 +30,6 @@ if line.get("command") == tap:
 PY
 fi
 
+[ -f "$DATA_DIR/hook.py" ] && python3 "$DATA_DIR/hook.py" uninstall && echo "✓ Hooks removed from Claude Code, Codex and Gemini CLI"
 rm -rf "$DATA_DIR"
-echo "✓ Session Bar data removed (your Claude Code sessions are untouched)"
+echo "✓ Agent Deck data removed (your Claude Code sessions are untouched)"

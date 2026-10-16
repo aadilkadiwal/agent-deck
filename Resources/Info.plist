@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Session Bar</string>
-    <key>CFBundleDisplayName</key><string>Session Bar</string>
-    <key>CFBundleIdentifier</key><string>com.aadilkadiwal.session-bar</string>
-    <key>CFBundleExecutable</key><string>SessionBar</string>
+    <key>CFBundleName</key><string>Agent Deck</string>
+    <key>CFBundleDisplayName</key><string>Agent Deck</string>
+    <key>CFBundleIdentifier</key><string>com.aadilkadiwal.agent-deck</string>
+    <key>CFBundleExecutable</key><string>AgentDeck</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -13,6 +13,6 @@
     <!-- Menu bar only: no Dock icon, no app menu. -->
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSAppleEventsUsageDescription</key><string>Session Bar opens and resumes Claude Code sessions in iTerm.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Agent Deck opens and resumes Claude Code sessions in iTerm.</string>
 </dict>
 </plist>

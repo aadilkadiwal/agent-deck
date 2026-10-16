@@ -1,5 +1,5 @@
 import AppKit
-import SessionBarCore
+import AgentDeckCore
 import SwiftUI
 
 struct MenuView: View {
@@ -9,6 +9,8 @@ struct MenuView: View {
     @State private var showingNew = false
     @State private var search = ""
     @State private var collapsed = Set<String>()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
 
     enum Confirm: Equatable {
         case stop(LiveSession), openWithPhone(LiveSession), delete(HistorySession)
@@ -24,6 +26,7 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             BannerView(model: model)
+            if !model.approvals.isEmpty { approvals }
             usage
             Divider().padding(.vertical, 6)
             if showingNew {
@@ -36,8 +39,33 @@ struct MenuView: View {
         }
         .padding(8)
         .frame(width: 370)
-        .onAppear { model.menuOpen = true }
-        .onDisappear { model.menuOpen = false; search = "" }
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.96, anchor: .top)
+        .offset(y: appeared || reduceMotion ? 0 : -8)
+        .opacity(appeared ? 1 : 0)
+        .onAppear {
+            model.menuOpen = true
+            withAnimation(Motion.spring(reduced: reduceMotion)) { appeared = true }
+        }
+        .onDisappear { model.menuOpen = false; search = ""; appeared = false }
+    }
+
+    private var approvals: some View {
+        let hotkeyTarget = model.approvals.first { $0.kind == .permission }?.id
+        return VStack(alignment: .leading, spacing: 6) {
+            SectionHeader(title: "NEEDS YOUR ANSWER · \(model.approvals.count)", trailing: "or answer in the terminal")
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(model.approvals) {
+                        ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget)
+                            .transition(.opacity.combined(with: .offset(y: -4)))
+                    }
+                }
+                .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
+            }
+            .frame(maxHeight: 420)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, 6)
     }
 
     @ViewBuilder private var usage: some View {
@@ -58,9 +86,22 @@ struct MenuView: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Usage limits").font(.system(size: 13, weight: .semibold))
-                Text("They appear after your next Claude Code message. Claude Code sends them to the status line, and Session Bar reads them from there.")
+                Text("They appear after your next Claude Code message. Claude Code sends them to the status line, and Agent Deck reads them from there.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(8)
+        }
+        if !model.codexUsage.isEmpty {
+            HStack(spacing: 10) {
+                Text("Codex").fontWeight(.semibold)
+                ForEach(model.codexUsage) { l in
+                    Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
+                        .foregroundStyle(l.percent >= 75 ? Level.color(l.percent) : .secondary)
+                        .contentTransition(.numericText(value: l.percent))
+                        .help(Fmt.resets(l.resetsAt).capitalized)
+                }
+                Spacer()
+            }
+            .font(.system(size: 11)).padding(.horizontal, 8).padding(.top, 4)
         }
     }
 
@@ -129,18 +170,22 @@ struct MenuView: View {
         let busy = model.working.contains(s.sessionId)
         VStack(spacing: 4) {
             HoverRow {
+                Capsule().fill(SessionColor.of(s.sessionId)).frame(width: 3, height: 22)
                 StateDot(state: s.isLeftover ? nil : s.state)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(model.displayName(s)).font(.system(size: 13, weight: .medium)).lineLimit(1)
                         if s.kind == .background { Pill(text: "BG") }
+                        if s.agent != .claude { Pill(text: s.agent.label.uppercased()) }
                     }
-                    Text("\(Fmt.shortPath(s.cwd)) · \(stateText(s))").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "))
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    activityLine(s)
                 }
                 Spacer(minLength: 4)
                 if busy {
                     ProgressView().controlSize(.small)
-                } else {
+                } else if s.agent == .claude {
                     IconButton(symbol: "iphone", on: s.isOnPhone, help: model.typingBlockers[s.sessionId] ?? phoneHelp(s),
                                dimmed: model.typingBlockers[s.sessionId] != nil) {
                         switch (s.isOnPhone, s.kind) {
@@ -158,7 +203,7 @@ struct MenuView: View {
             } action: { model.open(s) }
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
-                    .disabled(s.kind == .background || model.typingBlockers[s.sessionId] != nil)
+                    .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
                 Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
                 if let url = s.phoneURL { Button("Copy phone link") { copy(url.absoluteString) } }
                 Button("Copy session ID") { copy(s.sessionId) }
@@ -170,6 +215,7 @@ struct MenuView: View {
 
     private func closedRow(_ h: HistorySession) -> some View {
         HoverRow {
+            Color.clear.frame(width: 3, height: 22)
             StateDot(state: nil)
             VStack(alignment: .leading, spacing: 1) {
                 Text(h.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
@@ -237,6 +283,24 @@ struct MenuView: View {
         .background(RoundedRectangle(cornerRadius: 7).fill(Color.accentColor.opacity(0.1)))
     }
 
+    @ViewBuilder private func activityLine(_ s: LiveSession) -> some View {
+        let a = model.activity[s.sessionId]
+        let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\($0) agent\($0 == 1 ? "" : "s")" : nil }
+        let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
+        let text = [doing ?? stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
+        Group {
+            if let since = model.busySince[s.sessionId], s.state == .busy {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let t = max(0, Int(ctx.date.timeIntervalSince(since)))
+                    Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
+                }
+            } else {
+                Text(text)
+            }
+        }
+        .font(.system(size: 11)).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
+    }
+
     private func stateText(_ s: LiveSession) -> String {
         if s.isLeftover { return "not running · leftover" }
         switch s.state {
@@ -252,7 +316,7 @@ struct MenuView: View {
             Spacer()
             Button("View details…") { showDetails(tab: .sessions) }
             IconButton(symbol: "arrow.clockwise", help: "Refresh now", dimmed: model.refreshing) { Task { await model.refreshNow() } }
-            IconButton(symbol: "power", help: "Quit Session Bar") { NSApp.terminate(nil) }
+            IconButton(symbol: "power", help: "Quit Agent Deck") { NSApp.terminate(nil) }
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 6)

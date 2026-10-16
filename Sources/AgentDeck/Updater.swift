@@ -1,7 +1,7 @@
 import Foundation
-import SessionBarCore
+import AgentDeckCore
 
-/// Checks the source checkout the installer built from (path saved in ~/.claude/session-bar/source-path)
+/// Checks the source checkout the installer built from (path saved in ~/.claude/agent-deck/source-path)
 /// for new commits on its remote, and updates by pulling them and re-running the installer.
 @MainActor
 final class Updater: ObservableObject {
@@ -37,7 +37,7 @@ final class Updater: ObservableObject {
     func update() {
         guard let src = source else { return }
         busy = true
-        status = "Updating… Session Bar will restart."
+        status = "Updating… Agent Deck will restart."
         Task {
             do {
                 _ = try await Self.git(src, "pull", "--ff-only", "--quiet")

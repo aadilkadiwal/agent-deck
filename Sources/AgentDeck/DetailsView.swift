@@ -1,6 +1,6 @@
 import AppKit
 import CoreImage
-import SessionBarCore
+import AgentDeckCore
 import SwiftUI
 
 enum DetailsTab: String { case sessions, usage, settings }
@@ -147,6 +147,7 @@ struct SessionsTab: View {
                         Text(r.name).lineLimit(1).help(r.saved?.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
                         if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
                         if r.live?.kind == .background { Pill(text: "BG") }
+                        if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased()) }
                     }
                 }.width(min: 150, ideal: 200)
                 TableColumn("Folder", value: \.folder) { r in Text(Fmt.shortPath(r.folder)).lineLimit(1).help(r.folder) }
@@ -211,8 +212,10 @@ struct SessionsTab: View {
 
     @ViewBuilder private func actions(for r: SessionRow) -> some View {
         Button("Rename…") { renaming = r }
-            .disabled(r.live.map { $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
-        if let s = r.live {
+            .disabled(r.live.map { $0.agent != .claude || $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
+        if let s = r.live, s.agent != .claude {
+            Button("Show its window") { model.open(s) }
+        } else if let s = r.live {
             Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
             if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keep running)") { model.phoneOff(s) } }
             if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in iTerm + phone") { model.phoneOn(s) } }
@@ -350,6 +353,17 @@ struct SettingsTab: View {
 
     private var old: [HistorySession] { model.closed.filter { $0.lastActive < cutoff } }
 
+    private func healthRow(_ title: String, _ state: String?) -> some View {
+        LabeledContent(title) {
+            switch state {
+            case "ok": Label("Working", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            case "missing": Label("Not set up", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            case "absent": Text("Not installed").foregroundStyle(.secondary)
+            default: ProgressView().controlSize(.small)
+            }
+        }
+    }
+
     var body: some View {
         Form {
             Section {
@@ -359,7 +373,7 @@ struct SettingsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text("Claude Code deletes saved sessions older than this on its own (setting: cleanupPeriodDays). 30 days is the most Session Bar offers.")
+                Text("Claude Code deletes saved sessions older than this on its own (setting: cleanupPeriodDays). 30 days is the most Agent Deck offers.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             } header: { Text("History") }
 
@@ -401,6 +415,29 @@ struct SettingsTab: View {
                 Text("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
+
+            Section {
+                Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
+            } header: { Text("Prompts") } footer: {
+                Text("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            Section {
+                healthRow("Claude Code hooks", model.health?["claude"] as? String)
+                healthRow("Codex hooks", model.health?["codex"] as? String)
+                healthRow("Gemini CLI hooks", model.health?["gemini"] as? String)
+                healthRow("Status line (usage numbers)", model.health?["statusLine"] as? String)
+                HStack {
+                    if model.health?["error"] != nil { Text("Couldn't run the check (python3 missing?)").foregroundStyle(.orange) }
+                    Spacer()
+                    Button("Repair hooks") { Task { await model.repairHooks() } }
+                }
+            } header: { Text("Health") } footer: {
+                Text("Repair puts Agent Deck's hooks back without touching your own. Codex runs a new hook only after you approve it once: open Codex and type /hooks. A missing status line comes back by running install.sh again.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .task { await model.checkHealth() }
 
             Section {
                 Toggle("A session is waiting for your answer", isOn: $notifyWaiting)

@@ -32,7 +32,7 @@ public enum Forecast: Equatable, Sendable {
     }
 }
 
-/// Small append-only log of readings (`~/.claude/session-bar/usage-log.jsonl`), trimmed to 8 days:
+/// Small append-only log of readings (`~/.claude/agent-deck/usage-log.jsonl`), trimmed to 8 days:
 /// one weekly window plus a day. Nothing older is kept.
 public struct UsageLog: Sendable {
     public let url: URL

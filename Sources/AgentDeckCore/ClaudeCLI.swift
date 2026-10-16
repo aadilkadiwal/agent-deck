@@ -200,7 +200,7 @@ public struct ClaudeCLI: Sendable {
         guard let pid = s.pid else { return "This session has no window." }
         switch owningApp(pid: pid)?.bundleIdentifier {
         case SessionWindow.itermBundleId: return nil
-        case let other: return "Runs in \(other.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.deletingPathExtension().lastPathComponent } ?? "an app") that Session Bar can't type into."
+        case let other: return "Runs in \(other.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.deletingPathExtension().lastPathComponent } ?? "an app") that Agent Deck can't type into."
         }
     }
 
@@ -255,7 +255,7 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public func openInITerm(_ line: String) throws {
         guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionWindow.itermBundleId) != nil else {
-            throw Failure.failed("Session Bar opens sessions in iTerm, which isn't installed. Get it from iterm2.com.")
+            throw Failure.failed("Agent Deck opens sessions in iTerm, which isn't installed. Get it from iterm2.com.")
         }
         let source = """
         tell application "iTerm"
@@ -275,7 +275,7 @@ public struct ClaudeCLI: Sendable {
             let msg = error[NSAppleScript.errorMessage] as? String ?? "unknown error"
             let denied = (error[NSAppleScript.errorNumber] as? Int) == -1743
             throw Failure.failed(denied
-                ? "Session Bar isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."
+                ? "Agent Deck isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."
                 : "Couldn't open iTerm: \(msg)")
         }
     }
@@ -285,10 +285,7 @@ public struct ClaudeCLI: Sendable {
     }
 
     @MainActor
-    public static func focusTerminal(pid: Int32) -> Bool {
-        if let win = try? SessionWindow.find(pid: pid), (try? win.focus()) != nil { return true }
-        return owningApp(pid: pid)?.activate() ?? false
-    }
+    public static func focusTerminal(pid: Int32, cwd: String) -> Bool { Terminals.focus(pid: pid, cwd: cwd) }
 
     /// The GUI app a process runs under, found by walking up its parents (claude → zsh → login → iTerm2).
     @MainActor
