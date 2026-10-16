@@ -19,10 +19,10 @@ Design walkthrough with clickable mockups and every flow: [`docs/design.html`](d
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aadilkadiwal/agent-deck/main/install.sh | bash
+npx agent-deck
 ```
 
-Or from a checkout: `./install.sh`. Run it again any time to update.
+Or without Node: `curl -fsSL https://raw.githubusercontent.com/aadilkadiwal/agent-deck/main/install.sh | bash`, or `./install.sh` from a checkout. Run it again any time to update.
 
 Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`), Claude Code, iTerm2.
 
@@ -36,7 +36,7 @@ The installer:
 ## Remove
 
 ```bash
-./uninstall.sh        # or ~/.claude/agent-deck/src/uninstall.sh if you used the curl install
+npx agent-deck uninstall    # or ./uninstall.sh from a checkout
 ```
 
 Restores your original status line, removes the prompt hooks, and removes the app and its data. Your Claude Code sessions are not touched.
@@ -90,3 +90,7 @@ Layout:
 - `Sources/AgentDeck`: SwiftUI menu bar app (`MenuView` dropdown, `DetailsView` window).
 - `scripts/statusline-tap.sh`: the status line tap.
 - `scripts/hook.py`: the hook for all three agents, and its install / uninstall / check (Python 3.9 standard library, what ships with macOS).
+
+## License
+
+MIT, see [LICENSE](LICENSE).

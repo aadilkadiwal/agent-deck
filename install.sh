@@ -28,7 +28,10 @@ step "Checking requirements"
 major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$major" -ge 14 ] || die "Needs macOS 14 (Sonoma) or later. You have $(sw_vers -productVersion)."
 ok "macOS $(sw_vers -productVersion)"
-xcode-select -p >/dev/null 2>&1 && command -v swift >/dev/null || die "Needs Xcode Command Line Tools. Run: xcode-select --install"
+if ! { xcode-select -p >/dev/null 2>&1 && command -v swift >/dev/null; }; then
+  xcode-select --install 2>/dev/null || true
+  die "Needs Xcode Command Line Tools. Finish the install window that just opened, then run this again."
+fi
 ok "Swift $(swift --version 2>/dev/null | grep -o 'Swift version [0-9.]*' | cut -d' ' -f3)"
 command -v python3 >/dev/null || die "Needs python3 (comes with the Command Line Tools)."
 if command -v claude >/dev/null || [ -x "$HOME/.local/bin/claude" ]; then ok "Claude Code found"
