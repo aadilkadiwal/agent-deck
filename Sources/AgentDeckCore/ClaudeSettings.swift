@@ -31,7 +31,7 @@ public enum ClaudeSettings {
                 throw Failure.unreadable("it isn't a JSON object")
             }
             obj = o
-            let backup = paths.settingsFile.appendingPathExtension("session-bar-backup")
+            let backup = paths.settingsFile.appendingPathExtension("agent-deck-backup")
             if !fm.fileExists(atPath: backup.path) { try data.write(to: backup) }
         }
         obj["cleanupPeriodDays"] = days

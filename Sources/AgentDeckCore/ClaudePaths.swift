@@ -1,14 +1,10 @@
 import Foundation
 
 public struct ClaudePaths: Sendable {
-    public let claudeDir: URL
-    public let tmpDir: URL
+    public let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+    public let tmpDir = URL(fileURLWithPath: "/private/tmp/claude-\(getuid())")
 
-    public init(claudeDir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude"),
-                tmpDir: URL = URL(fileURLWithPath: "/private/tmp/claude-\(getuid())")) {
-        self.claudeDir = claudeDir
-        self.tmpDir = tmpDir
-    }
+    public init() {}
 
     public var sessionsDir: URL { claudeDir.appendingPathComponent("sessions") }
     public var projectsDir: URL { claudeDir.appendingPathComponent("projects") }
@@ -18,6 +14,7 @@ public struct ClaudePaths: Sendable {
     public var todosDir: URL { claudeDir.appendingPathComponent("todos") }
     public var tasksDir: URL { claudeDir.appendingPathComponent("tasks") }
     public var settingsFile: URL { claudeDir.appendingPathComponent("settings.json") }
-    public var appDir: URL { claudeDir.appendingPathComponent("session-bar") }
+    public var appDir: URL { claudeDir.appendingPathComponent("agent-deck") }
     public var statusFile: URL { appDir.appendingPathComponent("status.json") }
+    public var approvalSocket: URL { appDir.appendingPathComponent("approvals.sock") }
 }

@@ -1,9 +1,23 @@
 import AppKit
-import SessionBarCore
+import AgentDeckCore
 import SwiftUI
 
 enum Level {
     static func color(_ pct: Double) -> Color { pct >= 90 ? .red : pct >= 75 ? .orange : .accentColor }
+}
+
+enum Motion {
+    static func spring(reduced: Bool) -> Animation { reduced ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.78) }
+}
+
+/// A steady color per session, so a prompt card matches its row. Orange is left out: it means "needs you".
+enum SessionColor {
+    private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan, .mint, .brown]
+
+    static func of(_ sessionId: String) -> Color {
+        // String.hashValue changes every launch; this doesn't.
+        palette[sessionId.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) & 0xFFFF } % palette.count]
+    }
 }
 
 struct Ring: View {
@@ -11,6 +25,7 @@ struct Ring: View {
     var size: CGFloat = 44
     var line: CGFloat = 5
     var tint: Color?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -22,7 +37,9 @@ struct Ring: View {
             Text("\(Int(percent.rounded()))%")
                 .font(.system(size: size * 0.24, weight: .semibold))
                 .monospacedDigit()
+                .contentTransition(.numericText(value: percent))
         }
+        .animation(Motion.spring(reduced: reduceMotion), value: percent)
         .frame(width: size, height: size)
         .accessibilityLabel("\(Int(percent.rounded())) percent used")
     }

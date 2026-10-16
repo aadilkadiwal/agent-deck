@@ -2,16 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "SessionBar",
+    name: "AgentDeck",
     platforms: [.macOS(.v14)],
     targets: [
-        // Everything that reads Claude Code's files or builds `claude` commands. No UI, fully unit-tested.
-        .target(name: "SessionBarCore"),
-        .executableTarget(name: "SessionBar", dependencies: ["SessionBarCore"]),
-        .testTarget(
-            name: "SessionBarCoreTests",
-            dependencies: ["SessionBarCore"],
-            resources: [.copy("Fixtures")]
-        ),
+        // Everything that reads agents' files or builds `claude` commands. No UI.
+        .target(name: "AgentDeckCore"),
+        .executableTarget(name: "AgentDeck", dependencies: ["AgentDeckCore"]),
     ]
 )

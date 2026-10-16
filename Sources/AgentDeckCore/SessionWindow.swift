@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// The iTerm tab a running session lives in, found by its tty. Lets Session Bar type a command into
+/// The iTerm tab a running session lives in, found by its tty. Lets Agent Deck type a command into
 /// that exact session, the same as if you typed it, and read what's on screen.
 public struct SessionWindow: Sendable {
     public static let itermBundleId = "com.googlecode.iterm2"
@@ -12,10 +12,10 @@ public struct SessionWindow: Sendable {
         public var errorDescription: String? {
             switch self {
             case .unsupportedHost:
-                return "This session isn't running in iTerm, so Session Bar can't type into it. Type the command in it yourself."
+                return "This session isn't running in iTerm, so Agent Deck can't type into it. Type the command in it yourself."
             case .notFound: return "Couldn't find this session's window."
             case .notAllowed:
-                return "Session Bar isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."
+                return "Agent Deck isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."
             case .script(let msg): return msg
             }
         }
@@ -34,7 +34,7 @@ public struct SessionWindow: Sendable {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
         guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
         let dev = info.kp_eproc.e_tdev
-        guard dev != -1, let name = devname(dev, S_IFCHR) else { return nil }
+        guard dev != -1, dev != 0, let name = devname(dev, S_IFCHR) else { return nil }
         return "/dev/" + String(cString: name)
     }
 

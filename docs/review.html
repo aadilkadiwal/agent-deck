@@ -1,4 +1,4 @@
-<title>Session Bar Review</title>
+<title>Agent Deck Review</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Source+Sans+3:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
@@ -119,8 +119,8 @@ a{color:var(--accent)}
 
 <div class="wrap">
   <header style="display:grid;gap:10px">
-    <span class="eyebrow">Product review · Session Bar v0.1 · 4 Oct 2026</span>
-    <h1>Session Bar review</h1>
+    <span class="eyebrow">Product review · Agent Deck v0.1 · 4 Oct 2026</span>
+    <h1>Agent Deck review</h1>
     <p class="lede">I measured the installed app on your Mac, went through the code and your real session data (172 saved sessions), and compared it with five similar tools. Below: what is working, what to fix, and 14 suggestions in priority order. Each one says why it's useful and shows how it would look.</p>
   </header>
 
@@ -163,7 +163,7 @@ a{color:var(--accent)}
     </div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th>Feature</th><th>Session Bar</th><th>Clabar</th><th>CC Usage Tracker</th><th>CodexBar</th><th>ccusage / Usage Monitor</th></tr></thead>
+        <thead><tr><th>Feature</th><th>Agent Deck</th><th>Clabar</th><th>CC Usage Tracker</th><th>CodexBar</th><th>ccusage / Usage Monitor</th></tr></thead>
         <tbody>
           <tr><td>5-hour + weekly rings</td><td class="us y">Yes</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td><td class="p">Terminal only</td></tr>
           <tr><td>Per-model limits (Opus etc.)</td><td class="us p">Details window only</td><td class="y">Yes</td><td class="n">—</td><td class="y">Yes</td><td class="n">—</td></tr>
@@ -176,7 +176,7 @@ a{color:var(--accent)}
       </table>
     </div>
     <p class="cap" style="text-align:left">Sources: <a href="https://github.com/Magir/clabar">Clabar</a> · <a href="https://feedbagel.com/post/usagebar-macos-menu-bar-app-for-tracking-claude-code-usage-limits">Usagebar</a> · <a href="https://www.sourcepulse.org/projects/20879333">CodexBar</a> · <a href="https://claudelog.com/faqs/what-is-ccusage-tool">ccusage</a> · <a href="https://pypi.org/project/ccburn/">ccburn</a> · <a href="https://ccclub.dev/claude-code-limits">Claude Code limits explained</a></p>
-    <div class="note"><p><b>Takeaway:</b> Session Bar is the only tool that <i>manages</i> sessions. The two things the others do that it doesn't, alerts and a pace forecast, are the top suggestions below.</p></div>
+    <div class="note"><p><b>Takeaway:</b> Agent Deck is the only tool that <i>manages</i> sessions. The two things the others do that it doesn't, alerts and a pace forecast, are the top suggestions below.</p></div>
   </section>
 
   <!-- SUGGESTIONS -->
@@ -195,7 +195,7 @@ a{color:var(--accent)}
         <dl>
           <dt>What</dt><dd>A macOS notification when a session starts waiting for you (a question or permission) or finishes a long task, plus an amber dot on the menu bar icon until you look. Clicking the notification opens that session's iTerm tab.</dd>
           <dt>Why</dt><dd>The leftover session from 11 Sep sat "waiting for you" for three weeks unnoticed. With several sessions in different folders, the time lost is waiting on a question you didn't see. The app already detects the "waiting" state, so this mostly needs the notification part.</dd>
-          <dt>Note</dt><dd>Your <code>notch-so-good</code> hooks already announce these events. Pick one so you don't get double alerts: Session Bar can read the same events, or leave alerts to the notch app and only show the menu bar dot.</dd>
+          <dt>Note</dt><dd>Your <code>notch-so-good</code> hooks already announce these events. Pick one so you don't get double alerts: Agent Deck can read the same events, or leave alerts to the notch app and only show the menu bar dot.</dd>
         </dl>
       </div>
       <div class="mock">
@@ -213,7 +213,7 @@ a{color:var(--accent)}
         <dl>
           <dt>What</dt><dd>Under each ring: "At this pace you'll reach 100% at 3:40 PM" or "Safe until reset". The app saves a small history of usage numbers and works out the current rate.</dd>
           <dt>Why</dt><dd>42% means very different things two hours before the reset and ten minutes after it. A forecast tells you when to slow down, switch to a cheaper model, or stop starting new sessions. ccusage and Usage Monitor are popular mainly because of this feature.</dd>
-          <dt>How</dt><dd>Each new status snapshot is appended to a small local file (time + percentages), using the data Session Bar already receives. Rate = change over the last 30–60 minutes.</dd>
+          <dt>How</dt><dd>Each new status snapshot is appended to a small local file (time + percentages), using the data Agent Deck already receives. Rate = change over the last 30–60 minutes.</dd>
         </dl>
       </div>
       <div class="mock">
@@ -462,7 +462,7 @@ a{color:var(--accent)}
       </div>
       <div class="mock">
         <div class="dd" style="padding:12px;gap:6px">
-          <span style="font-size:12px"><b>Session Bar 0.1.0</b> · Update available: 0.2.0</span>
+          <span style="font-size:12px"><b>Agent Deck 0.1.0</b> · Update available: 0.2.0</span>
           <span style="font-size:11px;color:var(--muted)">Adds alerts, pace forecast, quick search</span>
           <span style="display:flex;justify-content:flex-end"><span class="btn blue">Update now</span></span>
         </div>

@@ -1,5 +1,5 @@
 import Foundation
-import SessionBarCore
+import AgentDeckCore
 import UserNotifications
 
 /// macOS notifications: a session needs you, a long task finished, a usage limit is getting close.
@@ -15,12 +15,22 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let longTask: TimeInterval = 60
 
     var onOpen: ((String) -> Void)?
+    var onAnswer: ((Int, ApprovalAnswer) -> Void)?
+    var hasApproval: ((String) -> Bool)?
     private var busySince: [String: Date] = [:]
     private var asked = false
 
     override init() {
         super.init()
         UserDefaults.standard.register(defaults: [Key.waiting: true, Key.finished: true, Key.limits: true])
+        let allow = UNNotificationAction(identifier: "allow", title: "Allow")
+        let always = UNNotificationAction(identifier: "always", title: "Always allow")
+        let deny = UNNotificationAction(identifier: "deny", title: "Deny", options: .destructive)
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: "permission", actions: [allow, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "permission-always", actions: [allow, always, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "plan", actions: [UNNotificationAction(identifier: "allow", title: "Approve plan")], intentIdentifiers: []),
+        ])
         UNUserNotificationCenter.current().delegate = self
     }
 
@@ -32,7 +42,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         for s in new where !s.isLeftover {
             let prev = before[s.sessionId]
             if s.state == .busy, prev?.state != .busy { busySince[s.sessionId] = now }
-            if s.state == .blocked, prev != nil, prev?.state != .blocked, enabled(Key.waiting) {
+            if s.state == .blocked, prev != nil, prev?.state != .blocked, enabled(Key.waiting), hasApproval?(s.sessionId) != true {
                 post(id: "wait-\(s.sessionId)", title: name(s), body: Self.waitingText(s.waitingFor), sessionId: s.sessionId)
             }
             if s.state == .idle, prev?.state == .busy, let start = busySince[s.sessionId],
@@ -64,7 +74,29 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UserDefaults.standard.set(Array(fired.suffix(40)), forKey: Key.fired)
     }
 
-    private func post(id: String, title: String, body: String, sessionId: String?) {
+    func approvalArrived(_ r: ApprovalRequest, name: String) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["wait-\(r.sessionId)"])
+        guard enabled(Key.waiting) else { return }
+        let title: String, body: String, category: String?
+        switch r.kind {
+        case .permission:
+            title = "\(name) wants to use \(r.toolName)"
+            body = r.detail.isEmpty ? (r.description ?? "") : r.detail
+            category = r.alwaysLabel == nil ? "permission" : "permission-always"
+        case .plan:
+            (title, body, category) = ("\(name) has a plan for you", r.detail, "plan")
+        case .question:
+            (title, body, category) = ("\(name) asks", r.questions.map(\.question).joined(separator: "\n"), nil)
+        }
+        post(id: "approval-\(r.id)", title: title, body: String(body.prefix(300)), sessionId: r.sessionId,
+             category: category, info: ["approvalId": r.id])
+    }
+
+    func approvalDone(_ id: Int) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["approval-\(id)"])
+    }
+
+    private func post(id: String, title: String, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:]) {
         let center = UNUserNotificationCenter.current()
         if !asked {
             asked = true
@@ -74,7 +106,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.title = title
         content.body = body
         content.sound = .default
-        if let sessionId { content.userInfo = ["sessionId": sessionId] }
+        var userInfo = info
+        if let sessionId { userInfo["sessionId"] = sessionId }
+        content.userInfo = userInfo
+        if let category { content.categoryIdentifier = category }
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
@@ -85,9 +120,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let id = response.notification.request.content.userInfo["sessionId"] as? String
+        let info = response.notification.request.content.userInfo
+        let id = info["sessionId"] as? String
+        let approval = info["approvalId"] as? Int
+        let action = response.actionIdentifier
+        let answers: [String: ApprovalAnswer] = ["allow": .allow(always: false), "always": .allow(always: true), "deny": .deny]
         Task { @MainActor in
-            if let id { self.onOpen?(id) }
+            if let approval, let answer = answers[action] {
+                self.onAnswer?(approval, answer)
+            } else if action == UNNotificationDefaultActionIdentifier, let id {
+                self.onOpen?(id)
+            }
             completionHandler()
         }
     }

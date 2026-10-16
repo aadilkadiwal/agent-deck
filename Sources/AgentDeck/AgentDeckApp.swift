@@ -1,8 +1,8 @@
-import SessionBarCore
+import AgentDeckCore
 import SwiftUI
 
 @main
-struct SessionBarApp: App {
+struct AgentDeckApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
@@ -13,7 +13,7 @@ struct SessionBarApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Session Bar", id: "details") {
+        Window("Agent Deck", id: "details") {
             DetailsView(model: model)
         }
         .defaultSize(width: 980, height: 640)

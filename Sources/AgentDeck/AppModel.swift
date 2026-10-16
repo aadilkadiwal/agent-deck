@@ -1,7 +1,13 @@
 import AppKit
 import ServiceManagement
-import SessionBarCore
+import AgentDeckCore
 import SwiftUI
+
+struct Activity: Equatable {
+    var tool: String?
+    var detail: String?
+    var subagents = Set<String>()
+}
 
 struct Banner: Identifiable, Equatable {
     let id = UUID()
@@ -24,6 +30,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var retentionDays: Int
     @Published private(set) var refreshing = false
     @Published private(set) var storage: StorageSummary?
+    @Published private(set) var approvals: [ApprovalRequest] = []
+    @Published private(set) var activity: [String: Activity] = [:]
+    @Published private(set) var busySince: [String: Date] = [:]
+    @Published private(set) var branches: [String: String] = [:]
+    @Published private(set) var codexUsage: [CodexUsage.Limit] = []
+    /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
+    @Published private(set) var health: [String: Any]?
     var menuOpen = false { didSet { if menuOpen { Task { await refresh(history: true, agents: true) } } } }
     var detailsOpen = false
 
@@ -38,6 +51,13 @@ final class AppModel: ObservableObject {
     private var lastAgents: Data?
     private var lastAgentsFetch = Date.distantPast
     private var lastAutoClean = Date.distantPast
+    private var approvalServer: ApprovalServer?
+    /// Codex and Gemini sessions, known only from their hooks.
+    private var others: [String: LiveSession] = [:]
+    /// Sessions whose plan was approved with "auto-accept edits": applied at their next edit prompt.
+    private var autoAcceptEdits = Set<String>()
+    private var lastCodexUsage = Date.distantPast
+    private let hotkeys = Hotkeys()
 
     init() {
         let paths = self.paths
@@ -47,7 +67,7 @@ final class AppModel: ObservableObject {
         retentionDays = ClaudeSettings.retentionDays(paths)
         samples = usageLog.load()
         if cli == nil {
-            banner = Banner(text: "Couldn't find the claude command. Install Claude Code, then reopen Session Bar.", isError: true)
+            banner = Banner(text: "Couldn't find the claude command. Install Claude Code, then reopen Agent Deck.", isError: true)
         }
         // Open at login is on by default; after the first launch it's the user's choice in Settings.
         if !UserDefaults.standard.bool(forKey: "didSetLoginDefault") {
@@ -55,6 +75,11 @@ final class AppModel: ObservableObject {
             try? SMAppService.mainApp.register()
         }
         notifier.onOpen = { [weak self] id in self?.openSession(id: id) }
+        notifier.onAnswer = { [weak self] id, answer in self?.answer(id, answer) }
+        notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
+        hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
+        UserDefaults.standard.register(defaults: [Self.approvalsKey: true])
+        setApprovals(UserDefaults.standard.bool(forKey: Self.approvalsKey))
         watch(paths.sessionsDir)
         watch(paths.appDir)
         // Cheap tick: re-reads the small session files and the usage snapshot (no processes started),
@@ -92,12 +117,28 @@ final class AppModel: ObservableObject {
             lastAgentsFetch = Date()
             lastAgents = await cli.listAgentsJSON()
         }
-        let next = LiveSessions.load(paths, agentsJSON: lastAgents)
+        others = others.filter { $0.value.pid.map { kill($0, 0) == 0 } ?? true }
+        let waiting = Set(approvals.map(\.sessionId))
+        let next = (LiveSessions.load(paths, agentsJSON: lastAgents) + others.values.map { s in
+            var s = s
+            if waiting.contains(s.sessionId) { s.state = .blocked }
+            return s
+        }).sorted { $0.startedAt > $1.startedAt }
         if next != live {
             notifier.sessionsChanged(from: live, to: next, name: displayName)
+            let now = Date()
+            busySince = Dictionary(uniqueKeysWithValues: next.filter { $0.state == .busy }.map { ($0.sessionId, busySince[$0.sessionId] ?? now) })
             live = next
-            typingBlockers = Dictionary(uniqueKeysWithValues: next.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } })
+            typingBlockers = Dictionary(uniqueKeysWithValues: next.filter { $0.agent == .claude }.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } })
+            branches = Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a })
+            activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
         }
+        if Date().timeIntervalSince(lastCodexUsage) > 30 {
+            lastCodexUsage = Date()
+            let u = await Task.detached { CodexUsage.load() }.value
+            if u != codexUsage { codexUsage = u }
+        }
+        dropAnsweredElsewhere()
         let u = UsageSnapshot.load(paths)
         if u != usage {
             usage = u
@@ -213,7 +254,8 @@ final class AppModel: ObservableObject {
     func resumeInTerminal(_ h: HistorySession) { openTerminal(ClaudeCLI.ShellLine.resume(h.sessionId, cwd: h.cwd)) }
 
     func open(_ s: LiveSession) {
-        if s.kind == .interactive, let pid = s.pid, ClaudeCLI.focusTerminal(pid: pid) { return }
+        if s.kind == .interactive, let pid = s.pid, ClaudeCLI.focusTerminal(pid: pid, cwd: s.cwd) { return }
+        guard s.agent == .claude else { return }
         openTerminal(ClaudeCLI.ShellLine.attach(s.shortId))
     }
 
@@ -272,6 +314,155 @@ final class AppModel: ObservableObject {
         } catch {
             banner = Banner(text: error.localizedDescription, isError: true)
         }
+    }
+
+    // MARK: Approvals
+
+    static let approvalsKey = "answerPrompts"
+    var approvalsOn: Bool { approvalServer != nil }
+
+    /// Off removes the socket, so the installed hooks find nothing and print nothing.
+    func setApprovals(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.approvalsKey)
+        approvalServer?.stop()
+        approvalServer = nil
+        approvals = []
+        updateApprovalUI()
+        guard on else { return }
+        let server = ApprovalServer(
+            path: paths.approvalSocket.path,
+            onRequest: { req in Task { @MainActor [weak self] in self?.received(req) } },
+            onGone: { id in Task { @MainActor [weak self] in self?.removeApproval(id) } },
+            onEvent: { e in Task { @MainActor [weak self] in self?.handle(e) } })
+        do {
+            try server.start()
+            approvalServer = server
+        } catch {
+            banner = Banner(text: error.localizedDescription, isError: true)
+        }
+    }
+
+    private func received(_ r: ApprovalRequest) {
+        if r.agent != .claude { track(r.agent, r.sessionId, cwd: r.cwd, pid: r.pid, state: .blocked) }
+        if r.kind == .permission, Self.editTools.contains(r.toolName), autoAcceptEdits.remove(r.sessionId) != nil {
+            approvalServer?.answer(r.id, .acceptEdits)
+            return
+        }
+        approvals.append(r)
+        notifier.approvalArrived(r, name: sessionName(r.sessionId, cwd: r.cwd))
+        updateApprovalUI()
+    }
+
+    static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
+
+    func approvePlan(_ r: ApprovalRequest, acceptEdits: Bool) {
+        if acceptEdits { autoAcceptEdits.insert(r.sessionId) }
+        answer(r.id, .allow(always: false))
+    }
+
+    private func handle(_ e: AgentEvent) {
+        let sid = e.sessionId
+        var a = activity[sid] ?? Activity()
+        switch e.name {
+        case "PreToolUse": (a.tool, a.detail) = (e.toolName, e.toolSummary)
+        case "PostToolUse":
+            a.tool = nil
+            // That tool ran, so a card still asking about it was answered in the terminal.
+            for r in approvals where r.sessionId == sid && r.toolName == e.toolName && r.detail == e.toolSummary.map({ String($0.prefix(4000)) }) {
+                answer(r.id, .terminal)
+            }
+        case "SubagentStart": if let id = e.subagentId { a.subagents.insert(id) }
+        case "SubagentStop": if let id = e.subagentId { a.subagents.remove(id) }
+        case "Stop":
+            a = Activity()
+            autoAcceptEdits.remove(sid)
+            for r in approvals where r.sessionId == sid { answer(r.id, .terminal) }
+        default: break
+        }
+        activity[sid] = a
+        guard e.agent != .claude else { return }
+        switch e.name {
+        case "SessionEnd": others[sid] = nil; activity[sid] = nil
+        case "SessionStart", "Stop": track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .idle)
+        case "Notification": track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .blocked)
+        default: track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .busy)
+        }
+        Task { await refresh() }
+    }
+
+    private func track(_ agent: Agent, _ sid: String, cwd: String, pid: Int32?, state: LiveSession.State) {
+        var s = others[sid] ?? LiveSession(agent: agent, sessionId: sid, pid: pid, cwd: cwd, state: state)
+        s.state = state
+        s.pid = s.pid ?? pid
+        others[sid] = s
+    }
+
+    func answer(_ id: Int, _ a: ApprovalAnswer) {
+        approvalServer?.answer(id, a)
+        removeApproval(id)
+    }
+
+    private func removeApproval(_ id: Int) {
+        guard approvals.contains(where: { $0.id == id }) else { return }
+        approvals.removeAll { $0.id == id }
+        notifier.approvalDone(id)
+        updateApprovalUI()
+    }
+
+    private func answerWithHotkey(allow: Bool) {
+        guard let r = approvals.first(where: { $0.kind == .permission }) else { return }
+        answer(r.id, allow ? .allow(always: false) : .deny)
+    }
+
+    private func updateApprovalUI() {
+        hotkeys.setEnabled(approvals.contains { $0.kind == .permission })
+    }
+
+    /// Claude Code doesn't stop the hook when you answer in the terminal. Once the session's pid file
+    /// no longer says it's waiting, the prompt is gone. The 3 s grace covers a pid file that hasn't
+    /// caught up with a brand-new prompt yet.
+    private func dropAnsweredElsewhere() {
+        let waiting = Dictionary(live.map { ($0.sessionId, $0.state == .blocked) }, uniquingKeysWith: { a, _ in a })
+        for r in approvals where waiting[r.sessionId] == false && Date().timeIntervalSince(r.receivedAt) > 3 {
+            answer(r.id, .terminal)
+        }
+    }
+
+    func sessionName(_ sessionId: String, cwd: String) -> String {
+        live.first { $0.sessionId == sessionId }.map(displayName) ?? Fmt.folderName(cwd)
+    }
+
+    // MARK: Health
+
+    /// The copy inside the app, so hooks can be repaired even if ~/.claude/agent-deck is gone.
+    private var hookScript: String {
+        Bundle.main.path(forResource: "hook", ofType: "py") ?? paths.appDir.appendingPathComponent("hook.py").path
+    }
+
+    func checkHealth() async {
+        let out = await Self.python(hookScript, "check")
+        health = out.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ["error": true]
+    }
+
+    func repairHooks() async {
+        let out = await Self.python(hookScript, "install")
+        banner = out == nil ? Banner(text: "Couldn't repair the hooks. Run install.sh again.", isError: true)
+                            : Banner(text: "Hooks repaired. In Codex, approve them once in /hooks.")
+        await checkHealth()
+    }
+
+    private static func python(_ args: String...) async -> String? {
+        await Task.detached {
+            let p = Process(), out = Pipe()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            p.arguments = args
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
+        }.value
     }
 
     var opensAtLogin: Bool { SMAppService.mainApp.status == .enabled }
