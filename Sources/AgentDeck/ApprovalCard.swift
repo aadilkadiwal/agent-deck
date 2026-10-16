@@ -5,6 +5,8 @@ struct ApprovalCard: View {
     @ObservedObject var model: AppModel
     let request: ApprovalRequest
     var hotkeyTarget = false
+    @State private var expanded = false
+    private static let previewLines = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -24,16 +26,22 @@ struct ApprovalCard: View {
                 Text(d).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
             }
             if !request.detail.isEmpty {
+                let lines = request.detail.split(separator: "\n", omittingEmptySubsequences: false)
+                let long = lines.count > Self.previewLines
                 ScrollView {
-                    Text(styledDetail)
+                    Text(styled(long && !expanded ? lines.prefix(Self.previewLines).joined(separator: "\n") : request.detail))
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(6)
                 }
-                .frame(maxHeight: request.kind == .plan ? 180 : 120)
+                .frame(maxHeight: expanded ? 260 : 150)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                if long {
+                    Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() } }
+                        .buttonStyle(.link).font(.system(size: 11))
+                }
             }
             switch request.kind {
             case .permission: permissionButtons
@@ -45,14 +53,31 @@ struct ApprovalCard: View {
         .controlSize(.small)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
+        .overlay { if let o = model.outcomes[request.id] { outcomeView(o) } }
+        .animation(.easeOut(duration: 0.15), value: model.outcomes[request.id] != nil)
     }
 
-    private var styledDetail: AttributedString {
+    private func outcomeView(_ o: ApprovalAnswer) -> some View {
+        let (text, symbol, color): (String, String, Color) = switch o {
+        case .deny: ("Denied", "xmark.circle.fill", .red)
+        case .answers: ("Answer sent", "checkmark.circle.fill", .green)
+        case .allow(let always): (request.kind == .plan ? "Plan approved" : always ? "Always allowed" : "Allowed", "checkmark.circle.fill", .green)
+        case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
+        case .terminal: ("", "", .clear)
+        }
+        return ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.88))
+            Label(text, systemImage: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(color)
+        }
+        .transition(.opacity)
+    }
+
+    private func styled(_ detail: String) -> AttributedString {
         guard request.kind == .permission, ["Edit", "MultiEdit", "Write", "NotebookEdit"].contains(request.toolName) else {
-            return AttributedString(request.detail)
+            return AttributedString(detail)
         }
         var out = AttributedString()
-        for (i, line) in request.detail.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        for (i, line) in detail.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             var a = AttributedString((i == 0 ? "" : "\n") + line)
             a.foregroundColor = i == 0 ? .secondary : line.hasPrefix("- ") ? .red : line.hasPrefix("+ ") ? .green : .primary
             out += a

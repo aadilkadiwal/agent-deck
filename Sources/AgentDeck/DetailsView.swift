@@ -147,7 +147,7 @@ struct SessionsTab: View {
                         Text(r.name).lineLimit(1).help(r.saved?.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
                         if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
                         if r.live?.kind == .background { Pill(text: "BG") }
-                        if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased()) }
+                        if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased(), color: a == .codex ? .teal : .blue) }
                     }
                 }.width(min: 150, ideal: 200)
                 TableColumn("Folder", value: \.folder) { r in Text(Fmt.shortPath(r.folder)).lineLimit(1).help(r.folder) }

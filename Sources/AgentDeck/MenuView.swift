@@ -25,7 +25,7 @@ struct MenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            BannerView(model: model)
+            BannerView(model: model).animation(Motion.spring(reduced: reduceMotion), value: model.banner?.id)
             if !model.approvals.isEmpty { approvals }
             usage
             Divider().padding(.vertical, 6)
@@ -50,7 +50,7 @@ struct MenuView: View {
     }
 
     private var approvals: some View {
-        let hotkeyTarget = model.approvals.first { $0.kind == .permission }?.id
+        let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
         return VStack(alignment: .leading, spacing: 6) {
             SectionHeader(title: "NEEDS YOUR ANSWER · \(model.approvals.count)", trailing: "or answer in the terminal")
             ScrollView {
@@ -131,7 +131,7 @@ struct MenuView: View {
                     if running.count > 5 && !searching {
                         ForEach(ProjectGroups.group(running), id: \.name) { g in groupView(g) }
                     } else {
-                        ForEach(running) { s in liveRow(s) }
+                        ForEach(running) { s in liveRow(s).transition(.opacity.combined(with: .move(edge: .top))) }
                     }
 
                     if !closed.isEmpty {
@@ -141,6 +141,7 @@ struct MenuView: View {
                         Text("No closed session matches.").font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
                     }
                 }
+                .animation(Motion.spring(reduced: reduceMotion), value: running.map(\.id))
             }
             .frame(maxHeight: 380)
             .fixedSize(horizontal: false, vertical: true)
@@ -176,7 +177,7 @@ struct MenuView: View {
                     HStack(spacing: 4) {
                         Text(model.displayName(s)).font(.system(size: 13, weight: .medium)).lineLimit(1)
                         if s.kind == .background { Pill(text: "BG") }
-                        if s.agent != .claude { Pill(text: s.agent.label.uppercased()) }
+                        if s.agent != .claude { Pill(text: s.agent.label.uppercased(), color: s.agent == .codex ? .teal : .blue) }
                     }
                     Text([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "))
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -201,6 +202,7 @@ struct MenuView: View {
                     }
                 }
             } action: { model.open(s) }
+            .animation(.easeInOut(duration: 0.2), value: s.state)
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
                     .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
@@ -414,6 +416,7 @@ struct BannerView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill((b.isError ? Color.orange : Color.green).opacity(0.12)))
             .padding(.bottom, 6)
+            .transition(.move(edge: .top).combined(with: .opacity))
             .task(id: b.id) {
                 guard !b.isError else { return }
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -455,10 +458,11 @@ struct StateDot: View {
 
 struct Pill: View {
     let text: String
+    var color: Color = .orange
     var body: some View {
-        Text(text).font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
+        Text(text).font(.system(size: 9, weight: .bold)).foregroundStyle(color)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Capsule().fill(Color.orange.opacity(0.18)))
+            .background(Capsule().fill(color.opacity(0.18)))
     }
 }
 
