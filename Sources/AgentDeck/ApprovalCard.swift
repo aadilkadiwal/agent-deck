@@ -2,16 +2,28 @@ import AgentDeckCore
 import SwiftUI
 
 struct ApprovalCard: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     let request: ApprovalRequest
     var hotkeyTarget = false
     @State private var expanded = false
+    @State private var arrived = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let previewLines = 8
+
+    private var outcome: ApprovalAnswer? { model.outcomes[request.id] }
+    private var tint: Color {
+        switch outcome {
+        case .deny: .red
+        case .allow, .acceptEdits, .answers: .green
+        case .terminal, nil: .orange
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(.orange)
+                    .symbolEffect(.bounce, value: arrived)
                 Circle().fill(SessionColor.of(request.sessionId)).frame(width: 7, height: 7)
                 Text(model.sessionName(request.sessionId, cwd: request.cwd)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Text(title).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
@@ -19,6 +31,8 @@ struct ApprovalCard: View {
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let s = max(0, Int(ctx.date.timeIntervalSince(request.receivedAt)))
                     Text(String(format: "%d:%02d", s / 60, s % 60)).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                        .contentTransition(.numericText(countsDown: false))
+                        .animation(Motion.fast(reduceMotion), value: s)
                 }
                 IconButton(symbol: "terminal", help: "Show it in the terminal instead") { model.openSession(id: request.sessionId) }
             }
@@ -39,7 +53,7 @@ struct ApprovalCard: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
                 if long {
-                    Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() } }
+                    Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(Motion.spring(reduced: reduceMotion)) { expanded.toggle() } }
                         .buttonStyle(.link).font(.system(size: 11))
                 }
             }
@@ -52,9 +66,28 @@ struct ApprovalCard: View {
         .font(.system(size: 12))
         .controlSize(.small)
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
-        .overlay { if let o = model.outcomes[request.id] { outcomeView(o) } }
-        .animation(.easeOut(duration: 0.15), value: model.outcomes[request.id] != nil)
+        .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.1)))
+        .overlay {
+            if hotkeyTarget && outcome == nil && model.menuOpen && !reduceMotion {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange, lineWidth: 1.5)
+                    .phaseAnimator([0.15, 0.6]) { v, o in v.opacity(o) } animation: { _ in .easeInOut(duration: Motion.pulse / 2) }
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay { if let o = outcome { outcomeView(o) } }
+        .animation(Motion.snappy(reduceMotion), value: outcome)
+        .keyframeAnimator(initialValue: 0.0, trigger: outcome == .deny) { v, x in
+            v.offset(x: x)
+        } keyframes: { _ in
+            KeyframeTrack {
+                LinearKeyframe(3, duration: 0.05)
+                LinearKeyframe(-3, duration: 0.07)
+                LinearKeyframe(3, duration: 0.07)
+                LinearKeyframe(-3, duration: 0.07)
+                LinearKeyframe(0, duration: 0.05)
+            }
+        }
+        .onAppear { if !reduceMotion { arrived = true } }
     }
 
     private func outcomeView(_ o: ApprovalAnswer) -> some View {
@@ -67,7 +100,8 @@ struct ApprovalCard: View {
         }
         return ZStack {
             RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.88))
-            Label(text, systemImage: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(color)
+            RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.1))
+            OutcomeBadge(text: text, symbol: symbol, color: color)
         }
         .transition(.opacity)
     }
@@ -188,5 +222,25 @@ struct QuestionForm: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct OutcomeBadge: View {
+    let text: String
+    let symbol: String
+    let color: Color
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: symbol).symbolEffect(.bounce, value: shown)
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(color)
+        .onAppear { shown = !reduceMotion }
+        .accessibilityElement(children: .combine)
     }
 }

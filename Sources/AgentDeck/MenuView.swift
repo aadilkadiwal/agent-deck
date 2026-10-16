@@ -3,7 +3,7 @@ import AgentDeckCore
 import SwiftUI
 
 struct MenuView: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var confirm: Confirm?
     @State private var showingNew = false
@@ -11,6 +11,8 @@ struct MenuView: View {
     @State private var collapsed = Set<String>()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
+    @State private var usageHover = false
+    @FocusState private var searchFocused: Bool
 
     enum Confirm: Equatable {
         case stop(LiveSession), openWithPhone(LiveSession), delete(HistorySession)
@@ -26,27 +28,46 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             BannerView(model: model).animation(Motion.spring(reduced: reduceMotion), value: model.banner?.id)
-            if !model.approvals.isEmpty { approvals }
+            if !model.approvals.isEmpty { approvals.transition(.opacity.combined(with: .move(edge: .top))) }
             usage
             Divider().padding(.vertical, 6)
-            if showingNew {
-                NewSessionPanel(model: model, isShown: $showingNew)
-            } else {
-                sessions
+            ZStack(alignment: .top) {
+                if showingNew {
+                    NewSessionPanel(model: model, isShown: $showingNew).transition(slide(from: .trailing))
+                } else {
+                    sessions.transition(slide(from: .leading))
+                }
             }
+            .clipped()
             Divider().padding(.vertical, 6)
             footer
         }
+        .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.isEmpty)
+        .animation(Motion.spring(reduced: reduceMotion), value: showingNew)
         .padding(8)
         .frame(width: 370)
-        .scaleEffect(appeared || reduceMotion ? 1 : 0.96, anchor: .top)
-        .offset(y: appeared || reduceMotion ? 0 : -8)
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.98, anchor: .top)
+        .offset(y: appeared || reduceMotion ? 0 : -4)
         .opacity(appeared ? 1 : 0)
+        .background {
+            // ⌘F: jump to search.
+            Button("") { showingNew = false; searchFocused = true }
+                .keyboardShortcut("f").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+        }
         .onAppear {
             model.menuOpen = true
             withAnimation(Motion.spring(reduced: reduceMotion)) { appeared = true }
         }
         .onDisappear { model.menuOpen = false; search = ""; appeared = false }
+    }
+
+    private func slide(from edge: Edge) -> AnyTransition {
+        reduceMotion ? .opacity : .move(edge: edge).combined(with: .opacity)
+    }
+
+    private var cardTransition: AnyTransition {
+        reduceMotion ? .opacity : .asymmetric(insertion: .push(from: .top),
+                                               removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
     }
 
     private var approvals: some View {
@@ -57,7 +78,7 @@ struct MenuView: View {
                 VStack(spacing: 6) {
                     ForEach(model.approvals) {
                         ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget)
-                            .transition(.opacity.combined(with: .offset(y: -4)))
+                            .transition(cardTransition)
                     }
                 }
                 .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
@@ -70,13 +91,23 @@ struct MenuView: View {
 
     @ViewBuilder private var usage: some View {
         if let u = model.usage {
-            HStack(spacing: 12) {
-                if let w = u.fiveHour { UsageTile(window: w, forecast: model.forecast(w)).frame(maxWidth: .infinity, alignment: .leading) }
-                if let w = u.weekly { UsageTile(window: w, forecast: model.forecast(w)).frame(maxWidth: .infinity, alignment: .leading) }
+            let stale = Date().timeIntervalSince(u.updatedAt) > 600
+            Button { showDetails(tab: .usage) } label: {
+                HStack(spacing: 12) {
+                    if let w = u.fiveHour { UsageTile(window: w, forecast: model.forecast(w)).frame(maxWidth: .infinity, alignment: .leading) }
+                    if let w = u.weekly { UsageTile(window: w, forecast: model.forecast(w), delay: 0.08).frame(maxWidth: .infinity, alignment: .leading) }
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(usageHover ? .secondary : .tertiary)
+                }
+                .opacity(stale ? 0.6 : 1)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(usageHover ? Color.primary.opacity(0.05) : .clear))
+                .contentShape(Rectangle())
             }
-            .padding(6)
-            .contentShape(Rectangle())
-            .onTapGesture { showDetails(tab: .usage) }
+            .buttonStyle(PressableStyle())
+            .onHover { usageHover = $0 }
+            .animation(Motion.fast(reduceMotion), value: usageHover)
+            .help(stale ? "These numbers are over 10 minutes old. They update with your next Claude Code message." : "Open usage details")
             HStack {
                 Text(u.model ?? "")
                 Spacer()
@@ -97,6 +128,7 @@ struct MenuView: View {
                     Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
                         .foregroundStyle(l.percent >= 75 ? Level.color(l.percent) : .secondary)
                         .contentTransition(.numericText(value: l.percent))
+                        .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
                         .help(Fmt.resets(l.resetsAt).capitalized)
                 }
                 Spacer()
@@ -119,14 +151,20 @@ struct MenuView: View {
         return VStack(alignment: .leading, spacing: 4) {
             TextField("Search name, folder or session ID", text: $search)
                 .textFieldStyle(.roundedBorder)
+                .focused($searchFocused)
                 .controlSize(.regular)
                 .padding(.horizontal, 6)
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     SectionHeader(title: "RUNNING NOW · \(running.count)", trailing: "newest first")
                     if running.isEmpty {
-                        Text(searching ? "No running session matches." : "No Claude Code sessions running.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
+                        HStack {
+                            Text(searching ? "No running session matches." : "No Claude Code sessions running.")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            Spacer()
+                            if !searching { Button("New session…") { showingNew = true }.controlSize(.small) }
+                        }
+                        .padding(8)
                     }
                     if running.count > 5 && !searching {
                         ForEach(ProjectGroups.group(running), id: \.name) { g in groupView(g) }
@@ -136,14 +174,16 @@ struct MenuView: View {
 
                     if !closed.isEmpty {
                         SectionHeader(title: searching ? "CLOSED · MATCHES" : "RECENT · CLOSED").padding(.top, 6)
-                        ForEach(closed) { h in closedRowWithConfirm(h) }
+                        ForEach(closed) { h in closedRowWithConfirm(h).transition(.opacity) }
                     } else if searching {
                         Text("No closed session matches.").font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
                     }
                 }
                 .animation(Motion.spring(reduced: reduceMotion), value: running.map(\.id))
+                .animation(Motion.spring(reduced: reduceMotion), value: closed.map(\.id))
+                .animation(Motion.spring(reduced: reduceMotion), value: confirm)
             }
-            .frame(maxHeight: 380)
+            .frame(maxHeight: model.approvals.isEmpty ? 380 : 240)
             .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -151,12 +191,18 @@ struct MenuView: View {
     @ViewBuilder private func groupView(_ g: ProjectGroups.Group) -> some View {
         let open = !collapsed.contains(g.name)
         Button {
-            if open { collapsed.insert(g.name) } else { collapsed.remove(g.name) }
+            withAnimation(Motion.snappy(reduceMotion)) {
+                if open { collapsed.insert(g.name) } else { collapsed.remove(g.name) }
+            }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: open ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold)).frame(width: 10)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).frame(width: 10)
+                    .rotationEffect(.degrees(open ? 90 : 0))
                 Text(g.name).font(.system(size: 12, weight: .semibold))
-                if g.sessions.contains(where: { $0.state == .blocked }) { Circle().fill(Color.orange).frame(width: 6, height: 6) }
+                if g.sessions.contains(where: { $0.state == .blocked }) {
+                    Image(systemName: "exclamationmark.circle.fill").font(.system(size: 10)).foregroundStyle(.orange)
+                        .help("A session here is waiting for you")
+                }
                 Spacer()
                 Text("\(g.sessions.count)").font(.system(size: 11)).foregroundStyle(.secondary)
             }
@@ -164,7 +210,16 @@ struct MenuView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        if open { ForEach(g.sessions) { s in liveRow(s).padding(.leading, 12) } }
+        if open {
+            ForEach(Array(g.sessions.enumerated()), id: \.element.id) { i, s in
+                liveRow(s).padding(.leading, 12).transition(stagger(i))
+            }
+        }
+    }
+
+    private func stagger(_ i: Int) -> AnyTransition {
+        reduceMotion ? .opacity
+            : AnyTransition.opacity.combined(with: .move(edge: .top)).animation(Motion.spring(reduced: false).delay(Double(min(i, 5)) * 0.02))
     }
 
     @ViewBuilder private func liveRow(_ s: LiveSession) -> some View {
@@ -172,37 +227,30 @@ struct MenuView: View {
         VStack(spacing: 4) {
             HoverRow {
                 Capsule().fill(SessionColor.of(s.sessionId)).frame(width: 3, height: 22)
-                StateDot(state: s.isLeftover ? nil : s.state)
+                StateDot(state: s.isLeftover ? nil : s.state, animated: model.menuOpen)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
-                        Text(model.displayName(s)).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                        Text(highlighted(model.displayName(s), search)).font(.system(size: 13, weight: .medium)).lineLimit(1)
                         if s.kind == .background { Pill(text: "BG") }
                         if s.agent != .claude { Pill(text: s.agent.label.uppercased(), color: s.agent == .codex ? .teal : .blue) }
                     }
-                    Text([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "))
+                    Text(highlighted([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "), search))
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     activityLine(s)
                 }
+                .accessibilityElement(children: .combine)
                 Spacer(minLength: 4)
-                if busy {
+                if s.agent == .claude {
+                    HStack(spacing: 8) { rowButtons(s) }
+                        .opacity(busy ? 0.3 : 1)
+                        .disabled(busy)
+                        .overlay { if busy { ProgressView().controlSize(.small).transition(.opacity) } }
+                        .animation(Motion.fast(reduceMotion), value: busy)
+                } else if busy {
                     ProgressView().controlSize(.small)
-                } else if s.agent == .claude {
-                    IconButton(symbol: "iphone", on: s.isOnPhone, help: model.typingBlockers[s.sessionId] ?? phoneHelp(s),
-                               dimmed: model.typingBlockers[s.sessionId] != nil) {
-                        switch (s.isOnPhone, s.kind) {
-                        case (false, .interactive): model.phoneOn(s)    // keeps running here too
-                        case (true, .interactive): model.phoneOff(s)    // keeps running here
-                        case (false, .background): confirm = .openWithPhone(s)
-                        case (true, .background): confirm = .stop(s)    // phone is its only window
-                        }
-                    }
-                    IconButton(symbol: s.isLeftover ? "xmark" : "stop.fill",
-                               help: s.isLeftover ? "Clear this leftover entry (history is kept)" : "Stop session") {
-                        if s.state == .idle && !s.isLeftover { model.stop(s) } else { confirm = .stop(s) }
-                    }
                 }
             } action: { model.open(s) }
-            .animation(.easeInOut(duration: 0.2), value: s.state)
+            .animation(Motion.snappy(reduceMotion), value: s.state)
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
                     .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
@@ -211,7 +259,23 @@ struct MenuView: View {
                 Button("Copy session ID") { copy(s.sessionId) }
             }
 
-            if let c = confirm, c.sessionId == s.sessionId { confirmBar(c) }
+            if let c = confirm, c.sessionId == s.sessionId { confirmBar(c).transition(slide(from: .top)) }
+        }
+    }
+
+    @ViewBuilder private func rowButtons(_ s: LiveSession) -> some View {
+        IconButton(symbol: "iphone", on: s.isOnPhone, help: model.typingBlockers[s.sessionId] ?? phoneHelp(s),
+                   dimmed: model.typingBlockers[s.sessionId] != nil) {
+            switch (s.isOnPhone, s.kind) {
+            case (false, .interactive): model.phoneOn(s)    // keeps running here too
+            case (true, .interactive): model.phoneOff(s)    // keeps running here
+            case (false, .background): confirm = .openWithPhone(s)
+            case (true, .background): confirm = .stop(s)    // phone is its only window
+            }
+        }
+        IconButton(symbol: s.isLeftover ? "xmark" : "stop.fill",
+                   help: s.isLeftover ? "Clear this leftover entry (history is kept)" : "Stop session") {
+            if s.state == .idle && !s.isLeftover { model.stop(s) } else { confirm = .stop(s) }
         }
     }
 
@@ -220,7 +284,7 @@ struct MenuView: View {
             Color.clear.frame(width: 3, height: 22)
             StateDot(state: nil)
             VStack(alignment: .leading, spacing: 1) {
-                Text(h.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(highlighted(h.name, search)).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Text(model.duplicateNames.contains(h.name) && h.lastPrompt?.isEmpty == false
                      ? "“\(h.lastPrompt ?? "")” · \(Fmt.folderName(h.cwd))" : Fmt.shortPath(h.cwd))
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
@@ -240,7 +304,7 @@ struct MenuView: View {
     @ViewBuilder private func closedRowWithConfirm(_ h: HistorySession) -> some View {
         VStack(spacing: 4) {
             closedRow(h)
-            if let c = confirm, c.sessionId == h.sessionId { confirmBar(c) }
+            if let c = confirm, c.sessionId == h.sessionId { confirmBar(c).transition(slide(from: .top)) }
         }
     }
 
@@ -295,6 +359,8 @@ struct MenuView: View {
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let t = max(0, Int(ctx.date.timeIntervalSince(since)))
                     Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
+                        .contentTransition(.numericText(countsDown: false))
+                        .animation(Motion.fast(reduceMotion), value: t)
                 }
             } else {
                 Text(text)
@@ -315,6 +381,7 @@ struct MenuView: View {
     private var footer: some View {
         HStack {
             Button { showingNew.toggle() } label: { Label(showingNew ? "Back" : "New session…", systemImage: showingNew ? "chevron.left" : "plus") }
+                .keyboardShortcut("n")
             Spacer()
             Button("View details…") { showDetails(tab: .sessions) }
             IconButton(symbol: "arrow.clockwise", help: "Refresh now", dimmed: model.refreshing) { Task { await model.refreshNow() } }
@@ -332,7 +399,7 @@ struct MenuView: View {
 }
 
 struct NewSessionPanel: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     @Binding var isShown: Bool
     @State private var folder: String?
     @State private var name = ""
@@ -399,7 +466,7 @@ struct FlowChips: View {
 }
 
 struct BannerView: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
 
     var body: some View {
         if let b = model.banner {
@@ -415,118 +482,31 @@ struct BannerView: View {
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill((b.isError ? Color.orange : Color.green).opacity(0.12)))
+            .overlay(alignment: .bottom) {
+                if !b.isError {
+                    ProgressView(timerInterval: b.shownAt...b.shownAt.addingTimeInterval(b.lifetime), countsDown: true) {
+                        EmptyView()
+                    } currentValueLabel: { EmptyView() }
+                    .progressViewStyle(.linear)
+                    .tint(.green)
+                    .scaleEffect(x: 1, y: 0.5, anchor: .bottom)
+                    .padding(.horizontal, 8)
+                    .accessibilityHidden(true)
+                }
+            }
             .padding(.bottom, 6)
             .transition(.move(edge: .top).combined(with: .opacity))
             .task(id: b.id) {
                 guard !b.isError else { return }
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(b.lifetime * 1e9))
                 if model.banner?.id == b.id { model.banner = nil }
             }
         }
     }
 }
 
-struct SectionHeader: View {
-    let title: String
-    var trailing: String?
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            if let trailing { Text(trailing) }
-        }
-        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-        .padding(.horizontal, 8).padding(.vertical, 4)
-    }
-}
-
-struct StateDot: View {
-    let state: LiveSession.State?
-    var body: some View {
-        Group {
-            switch state {
-            case .busy: Circle().fill(Color.green)
-            case .idle: Circle().strokeBorder(Color.green, lineWidth: 1.5)
-            case .blocked: Circle().fill(Color.orange)
-            case nil: Circle().strokeBorder(Color.secondary, lineWidth: 1.5)
-            }
-        }
-        .frame(width: 9, height: 9)
-        .help(state.map { $0 == .busy ? "Working" : $0 == .idle ? "Idle" : "Waiting for you" } ?? "Closed")
-    }
-}
-
-struct Pill: View {
-    let text: String
-    var color: Color = .orange
-    var body: some View {
-        Text(text).font(.system(size: 9, weight: .bold)).foregroundStyle(color)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.18)))
-    }
-}
-
-struct IconButton: View {
-    let symbol: String
-    var on = false
-    let help: String
-    var dimmed = false
-    let action: () -> Void
-    var body: some View {
-        Button(action: { if !dimmed { action() } }) {
-            Image(systemName: symbol).font(.system(size: 12))
-                .frame(width: 26, height: 22)
-                .foregroundStyle(on ? Color.accentColor : .secondary)
-                .background(RoundedRectangle(cornerRadius: 6).fill(on ? Color.accentColor.opacity(0.15) : .clear))
-        }
-        .buttonStyle(.borderless)
-        .opacity(dimmed ? 0.35 : 1)
-        .help(help)
-        .accessibilityLabel(help)
-    }
-}
-
-struct RenameField: View {
-    let initial: String
-    let done: (String?) -> Void
-    @State private var text = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        TextField("Name", text: $text)
-            .textFieldStyle(.roundedBorder)
-            .focused($focused)
-            .onSubmit { save() }
-            .onAppear { text = initial; focused = true }
-        Button("Cancel") { done(nil) }
-        Button("Save") { save() }.keyboardShortcut(.defaultAction)
-            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
-    }
-
-    private func save() {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        done(t == initial ? nil : t)
-    }
-}
-
-struct HoverRow<Content: View>: View {
-    @ViewBuilder let content: Content
-    let action: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        HStack(spacing: 8) { content }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 7).fill(hover ? Color.primary.opacity(0.07) : .clear))
-            .contentShape(Rectangle())
-            .onHover { hover = $0 }
-            .onTapGesture(perform: action)
-    }
-}
-
 struct DeleteConfirm: View {
-    @ObservedObject var model: AppModel
+    let model: AppModel
     let sessions: [HistorySession]
     var compact = false
     let onDone: () -> Void

@@ -109,10 +109,12 @@ public final class HistoryScanner: @unchecked Sendable {
     }
 
     /// Transcript first: if that fails nothing else is touched.
-    public static func trash(_ s: HistorySession, paths: ClaudePaths) throws {
+    public static func trash(_ s: HistorySession, paths: ClaudePaths) throws -> [Leftovers.Moved] {
         let all = Leftovers.allPaths(s, paths)
-        try FileManager.default.trashItem(at: s.fileURL, resultingItemURL: nil)
-        Leftovers.trash(all.filter { $0 != s.fileURL })
+        var landed: NSURL?
+        try FileManager.default.trashItem(at: s.fileURL, resultingItemURL: &landed)
+        let rest = Leftovers.moveToTrash(all.filter { $0 != s.fileURL }).moved
+        return (landed.map { [(s.fileURL, $0 as URL)] } ?? []) + rest
     }
 }
 

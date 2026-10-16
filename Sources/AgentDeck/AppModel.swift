@@ -15,30 +15,32 @@ struct Banner: Identifiable, Equatable {
     var isError = false
     var actionTitle: String?
     var action: (@MainActor () -> Void)?
+    let shownAt = Date()
+    var lifetime: Double { action == nil ? 4 : 8 }
     static func == (a: Banner, b: Banner) -> Bool { a.id == b.id }
 }
 
-@MainActor
-final class AppModel: ObservableObject {
-    @Published private(set) var live: [LiveSession] = []
-    @Published private(set) var history: [HistorySession] = []
-    @Published private(set) var usage: UsageSnapshot?
-    @Published private(set) var samples: [UsageSample] = []
-    @Published private(set) var working: Set<String> = []
-    @Published private(set) var typingBlockers: [String: String] = [:]
-    @Published var banner: Banner?
-    @Published private(set) var retentionDays: Int
-    @Published private(set) var refreshing = false
-    @Published private(set) var storage: StorageSummary?
-    @Published private(set) var approvals: [ApprovalRequest] = []
+@MainActor @Observable
+final class AppModel {
+    private(set) var live: [LiveSession] = []
+    private(set) var history: [HistorySession] = []
+    private(set) var usage: UsageSnapshot?
+    private(set) var samples: [UsageSample] = []
+    private(set) var working: Set<String> = []
+    private(set) var typingBlockers: [String: String] = [:]
+    var banner: Banner?
+    private(set) var retentionDays: Int
+    private(set) var refreshing = false
+    private(set) var storage: StorageSummary?
+    private(set) var approvals: [ApprovalRequest] = []
     /// Answered cards stay a moment to show what was sent, then leave.
-    @Published private(set) var outcomes: [Int: ApprovalAnswer] = [:]
-    @Published private(set) var activity: [String: Activity] = [:]
-    @Published private(set) var busySince: [String: Date] = [:]
-    @Published private(set) var branches: [String: String] = [:]
-    @Published private(set) var codexUsage: [CodexUsage.Limit] = []
+    private(set) var outcomes: [Int: ApprovalAnswer] = [:]
+    private(set) var activity: [String: Activity] = [:]
+    private(set) var busySince: [String: Date] = [:]
+    private(set) var branches: [String: String] = [:]
+    private(set) var codexUsage: [CodexUsage.Limit] = []
     /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
-    @Published private(set) var health: [String: Any]?
+    private(set) var health: [String: Any]?
     var menuOpen = false { didSet { if menuOpen { Task { await refresh(history: true, agents: true) } } } }
     var detailsOpen = false
 
@@ -268,15 +270,25 @@ final class AppModel: ObservableObject {
     /// Only closed sessions; running ones are skipped so a live transcript is never pulled away.
     func delete(_ sessions: [HistorySession], files: [URL] = []) {
         let ids = liveIds
-        var failed = 0, done = 0
+        var failed = 0, done = 0, moved: [Leftovers.Moved] = []
         for s in sessions where !ids.contains(s.sessionId) {
-            do { try HistoryScanner.trash(s, paths: paths); done += 1 } catch { failed += 1 }
+            do { moved += try HistoryScanner.trash(s, paths: paths); done += 1 } catch { failed += 1 }
         }
-        let fileFailed = Leftovers.trash(files)
+        let (fileFailed, filesMoved) = Leftovers.moveToTrash(files)
+        moved += filesMoved
         let filesNote = files.isEmpty ? "" : " and \(files.count - fileFailed) file\(files.count - fileFailed == 1 ? "" : "s")"
         banner = failed + fileFailed == 0
-            ? Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash.")
+            ? Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
+                self?.undoDelete(moved)
+            }
             : Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash; \(failed + fileFailed) couldn't be moved.", isError: true)
+        Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
+    }
+
+    private func undoDelete(_ moved: [Leftovers.Moved]) {
+        let failed = Leftovers.restore(moved)
+        banner = failed == 0 ? Banner(text: "Restored from the Trash.")
+                             : Banner(text: "\(failed) item\(failed == 1 ? "" : "s") couldn't be restored. They're still in the Trash.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
     }
 
@@ -300,7 +312,7 @@ final class AppModel: ObservableObject {
             let o = Leftovers.orphans(paths, keep: keep)
             return (o, Leftovers.size(o))
         }.value
-        let failed = Leftovers.trash(orphans)
+        let failed = Leftovers.moveToTrash(orphans).failed
         if !quiet || failed > 0 {
             banner = failed == 0 ? Banner(text: "Moved \(orphans.count) leftover\(orphans.count == 1 ? "" : "s") (\(Fmt.bytes(bytes))) to the Trash.")
                 : Banner(text: "\(failed) leftover\(failed == 1 ? "" : "s") couldn't be moved to the Trash.", isError: true)
@@ -351,7 +363,10 @@ final class AppModel: ObservableObject {
             return
         }
         approvals.append(r)
-        notifier.approvalArrived(r, name: sessionName(r.sessionId, cwd: r.cwd))
+        let name = sessionName(r.sessionId, cwd: r.cwd)
+        notifier.approvalArrived(r, name: name)
+        AccessibilityNotification.Announcement(r.kind == .permission ? "\(name) wants to use \(r.toolName)"
+                                               : r.kind == .plan ? "\(name) has a plan for you" : "\(name) has a question").post()
         updateApprovalUI()
     }
 
@@ -476,7 +491,7 @@ final class AppModel: ObservableObject {
         }.value
     }
 
-    var opensAtLogin: Bool { SMAppService.mainApp.status == .enabled }
+    private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
 
     func setOpensAtLogin(_ on: Bool) {
         do {
@@ -484,7 +499,7 @@ final class AppModel: ObservableObject {
         } catch {
             banner = Banner(text: "Couldn't change Open at login: \(error.localizedDescription)", isError: true)
         }
-        objectWillChange.send()
+        opensAtLogin = SMAppService.mainApp.status == .enabled
     }
 }
 
