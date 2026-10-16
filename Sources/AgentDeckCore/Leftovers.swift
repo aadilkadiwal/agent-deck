@@ -133,8 +133,28 @@ public enum Leftovers {
                               undoBackups: size([p.fileHistoryDir]), orphans: orphans, orphanBytes: size(orphans))
     }
 
-    @discardableResult
-    public static func trash(_ urls: [URL]) -> Int {
-        urls.filter { (try? FileManager.default.trashItem(at: $0, resultingItemURL: nil)) == nil }.count
+    public typealias Moved = (from: URL, to: URL)
+
+    public static func moveToTrash(_ urls: [URL]) -> (failed: Int, moved: [Moved]) {
+        var failed = 0, moved: [Moved] = []
+        for url in urls {
+            var landed: NSURL?
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: &landed)
+                if let landed { moved.append((url, landed as URL)) }
+            } catch { failed += 1 }
+        }
+        return (failed, moved)
+    }
+
+    public static func restore(_ moved: [Moved]) -> Int {
+        let fm = FileManager.default
+        return moved.filter { m in
+            do {
+                try fm.createDirectory(at: m.from.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: m.to, to: m.from)
+                return false
+            } catch { return true }
+        }.count
     }
 }
