@@ -87,7 +87,10 @@ def permission(agent, payload):
             decision["updatedPermissions"] = updates
         out("PermissionRequest", {"decision": decision})
     elif reply.get("decision") == "deny":
-        out("PermissionRequest", {"decision": {"behavior": "deny", "message": "Denied from Agent Deck"}})
+        message = reply.get("message")
+        if not isinstance(message, str) or not message.strip():
+            message = "Denied from Agent Deck"
+        out("PermissionRequest", {"decision": {"behavior": "deny", "message": message}})
 
 
 def question(payload):

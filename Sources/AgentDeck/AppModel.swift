@@ -41,7 +41,14 @@ final class AppModel {
     private(set) var codexUsage: [CodexUsage.Limit] = []
     /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
     private(set) var health: [String: Any]?
-    var menuOpen = false { didSet { if menuOpen { Task { await refresh(history: true, agents: true) } } } }
+    var menuOpen = false {
+        didSet {
+            guard menuOpen else { return }
+            Task { await refresh(history: true, agents: true) }
+            // A broken hook silently turns approvals off, so the dropdown checks too (not on every open).
+            if Date().timeIntervalSince(lastHealthCheck) > 600 { Task { await checkHealth() } }
+        }
+    }
     var detailsOpen = false
 
     let paths = ClaudePaths()
@@ -61,6 +68,7 @@ final class AppModel {
     /// Sessions whose plan was approved with "auto-accept edits": applied at their next edit prompt.
     private var autoAcceptEdits = Set<String>()
     private var lastCodexUsage = Date.distantPast
+    private var lastHealthCheck = Date.distantPast
     private let hotkeys = Hotkeys()
 
     init() {
@@ -97,6 +105,17 @@ final class AppModel {
     var liveIds: Set<String> { Set(live.map(\.sessionId)) }
     var closed: [HistorySession] { history.filter { !liveIds.contains($0.sessionId) } }
     var needsYou: Bool { live.contains { $0.state == .blocked && !$0.isLeftover } }
+    func count(_ state: LiveSession.State) -> Int { live.filter { $0.state == state && !$0.isLeftover }.count }
+
+    var barSummary: String {
+        var parts: [String] = []
+        if let w = usage?.fiveHour { parts.append("5-hour limit \(Int(w.percent().rounded()))%") }
+        if let w = usage?.weekly { parts.append("weekly \(Int(w.percent().rounded()))%") }
+        parts.append("\(live.count) session\(live.count == 1 ? "" : "s") running")
+        let waiting = count(.blocked)
+        if waiting > 0 { parts.append("\(waiting) waiting for you") }
+        return parts.joined(separator: " · ")
+    }
     var emptySessions: [HistorySession] { closed.filter(\.isEmpty) }
     var duplicateNames: Set<String> {
         var seen = Set<String>(), dupes = Set<String>()
@@ -190,14 +209,15 @@ final class AppModel {
         else if let h = history.first(where: { $0.sessionId == id }) { resumeInTerminal(h) }
     }
 
-    private func perform(_ id: String, success: String? = nil, _ body: @escaping (ClaudeCLI) async throws -> Void) {
+    private func perform(_ id: String, success: String? = nil, undo: (@MainActor () -> Void)? = nil,
+                         _ body: @escaping (ClaudeCLI) async throws -> Void) {
         guard let cli else { return }
         working.insert(id)
         Task {
             defer { working.remove(id) }
             do {
                 try await body(cli)
-                if let success { banner = Banner(text: success) }
+                if let success { banner = Banner(text: success, actionTitle: undo == nil ? nil : "Undo", action: undo) }
             } catch let ClaudeCLI.Failure.untrusted(folder) {
                 banner = Banner(text: ClaudeCLI.Failure.untrusted(folder: folder).errorDescription ?? "", isError: true,
                                 actionTitle: "Open in iTerm") { [weak self] in
@@ -211,7 +231,13 @@ final class AppModel {
     }
 
     func stop(_ s: LiveSession) {
-        perform(s.sessionId, success: s.isLeftover ? "Cleared \(displayName(s)). Its history is still in Recent." : "Stopped \(displayName(s)).") { try await $0.stop(s) }
+        if s.isLeftover {
+            perform(s.sessionId, success: "Cleared \(displayName(s)). Its history is still in Recent.") { try await $0.stop(s) }
+            return
+        }
+        perform(s.sessionId, success: "Stopped \(displayName(s)).", undo: { [weak self] in
+            self?.openTerminal(ClaudeCLI.ShellLine.resume(s.sessionId, cwd: s.cwd))
+        }) { try await $0.stop(s) }
     }
 
     /// Phone on: a terminal session gets /remote-control typed into it and keeps running on the Mac.
@@ -466,8 +492,18 @@ final class AppModel {
     }
 
     func checkHealth() async {
+        lastHealthCheck = Date()
         let out = await Self.python(hookScript, "check")
         health = out.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ["error": true]
+    }
+
+    var missingHooks: Set<String> {
+        Set(["claude", "codex", "gemini", "statusLine"].filter { health?[$0] as? String == "missing" })
+    }
+
+    func projectUsage(since: Date) async -> [ProjectUsage.Entry] {
+        let sessions = history
+        return await Task.detached { ProjectUsage.load(sessions, since: since) }.value
     }
 
     func repairHooks() async {

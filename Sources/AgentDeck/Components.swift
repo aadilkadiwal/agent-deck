@@ -123,6 +123,8 @@ struct RenameField: View {
 
 // `.activate` focus only exists with Keyboard navigation on, so a click never leaves a focus ring.
 struct HoverRow<Content: View>: View {
+    var selected = false
+    var open: (() -> Void)?
     @ViewBuilder let content: Content
     let action: () -> Void
     @State private var hover = false
@@ -130,21 +132,27 @@ struct HoverRow<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 8) { content }
+        let row = HStack(spacing: 8) { content }
             .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 7).fill(hover || focused ? Color.primary.opacity(0.07) : .clear))
-            .overlay { if focused { RoundedRectangle(cornerRadius: 7).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5) } }
+            .background(RoundedRectangle(cornerRadius: 7).fill(hover || focused || selected ? Color.primary.opacity(0.07) : .clear))
+            .overlay {
+                if focused || selected { RoundedRectangle(cornerRadius: 7).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5) }
+            }
             .animation(Motion.fast(reduceMotion), value: hover)
             .contentShape(Rectangle())
             .onHover { hover = $0 }
-            .onTapGesture(perform: action)
-            .focusable(interactions: .activate)
-            .focused($focused)
-            .focusEffectDisabled()
-            .onKeyPress(.return) { action(); return .handled }
-            .onKeyPress(.space) { action(); return .handled }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { action() }
+        Group {
+            if let open { row.onTapGesture(count: 2, perform: open).onTapGesture(perform: action) }
+            else { row.onTapGesture(perform: action) }
+        }
+        .focusable(interactions: .activate)
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(.return) { (open ?? action)(); return .handled }
+        .onKeyPress(.space) { action(); return .handled }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+        .accessibilityAction(named: "Open") { (open ?? action)() }
     }
 }
 

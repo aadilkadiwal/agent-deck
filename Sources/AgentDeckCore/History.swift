@@ -147,7 +147,7 @@ public struct SessionDetail: Equatable, Sendable {
         return parse(data)
     }
 
-    static func parse(_ data: Data) -> SessionDetail {
+    static func parse(_ data: Data, since: Date? = nil) -> SessionDetail {
         var d = SessionDetail()
         var seen = Set<String>()
         let iso = ISO8601DateFormatter()
@@ -156,7 +156,8 @@ public struct SessionDetail: Equatable, Sendable {
             guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             let type = o["type"] as? String
             guard type == "user" || type == "assistant" else { continue }
-            if let ts = (o["timestamp"] as? String).flatMap(iso.date(from:)) {
+            let ts = (o["timestamp"] as? String).flatMap(iso.date(from:))
+            if let ts {
                 d.firstAt = d.firstAt ?? ts
                 d.lastAt = ts
             }
@@ -166,7 +167,8 @@ public struct SessionDetail: Equatable, Sendable {
                 if msg?["content"] is String, o["isMeta"] as? Bool != true { d.prompts += 1 }
                 continue
             }
-            if let id = msg?["id"] as? String, seen.insert(id).inserted, let u = msg?["usage"] as? [String: Any] {
+            let inWindow = since.map { s in ts.map { $0 >= s } ?? false } ?? true
+            if inWindow, let id = msg?["id"] as? String, seen.insert(id).inserted, let u = msg?["usage"] as? [String: Any] {
                 d.tokens += ["input_tokens", "output_tokens", "cache_creation_input_tokens"].reduce(0) { $0 + ((u[$1] as? NSNumber)?.intValue ?? 0) }
             }
             if let parts = msg?["content"] as? [[String: Any]],
@@ -176,5 +178,24 @@ public struct SessionDetail: Equatable, Sendable {
             }
         }
         return d
+    }
+}
+
+/// Tokens per project folder since a date. Reads whole transcripts, but only those touched since then.
+public enum ProjectUsage {
+    public struct Entry: Identifiable, Equatable, Sendable {
+        public let folder: String
+        public let tokens: Int
+        public var id: String { folder }
+    }
+
+    public static func load(_ sessions: [HistorySession], since: Date) -> [Entry] {
+        var by: [String: Int] = [:]
+        for s in sessions where s.lastActive >= since {
+            guard let data = try? Data(contentsOf: s.fileURL) else { continue }
+            let n = SessionDetail.parse(data, since: since).tokens
+            if n > 0 { by[s.cwd, default: 0] += n }
+        }
+        return by.map { Entry(folder: $0.key, tokens: $0.value) }.sorted { $0.tokens > $1.tokens }
     }
 }

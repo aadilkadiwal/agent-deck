@@ -104,6 +104,7 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
 public enum ApprovalAnswer: Equatable, Sendable {
     case allow(always: Bool)
     case deny
+    case denyWith(reason: String)
     /// Question text → label; multi-select labels joined with ", ", as the terminal does.
     case answers([String: String])
     case acceptEdits
@@ -114,6 +115,7 @@ public enum ApprovalAnswer: Equatable, Sendable {
         switch self {
         case .allow(let always): o = ["decision": "allow", "always": always]
         case .deny: o = ["decision": "deny"]
+        case .denyWith(let reason): o = ["decision": "deny", "message": reason]
         case .acceptEdits: o = ["decision": "allow", "mode": "acceptEdits"]
         case .answers(let a): o = ["answers": a]
         case .terminal: o = [:]

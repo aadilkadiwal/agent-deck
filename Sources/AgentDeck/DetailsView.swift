@@ -39,7 +39,10 @@ struct DetailsView: View {
                     switch current {
                     case .sessions: SessionsTab(model: model, search: $search, waitingOnly: false)
                     case .waiting: SessionsTab(model: model, search: $search, waitingOnly: true)
-                    case .usage: UsageTab(model: model)
+                    case .usage: UsageTab(model: model) { folder in
+                        search = folder
+                        tab = DetailsTab.sessions.rawValue
+                    }
                     case .settings: SettingsTab(model: model)
                     }
                 }
@@ -203,7 +206,9 @@ struct SessionsTab: View {
         let rows = self.rows
         VStack(alignment: .leading, spacing: 10) {
             if !waitingOnly { controls }
+            if waitingOnly && !model.approvals.isEmpty { cards }
             table(rows)
+                .frame(minHeight: waitingOnly && !model.approvals.isEmpty ? 120 : nil)
                 .overlay { if rows.isEmpty { emptyState } }
         }
         .padding(12)
@@ -229,6 +234,20 @@ struct SessionsTab: View {
         .animation(Motion.spring(reduced: reduceMotion), value: selectedRow?.id)
         // Forget ticks for sessions that no longer exist (deleted here or by Claude Code's cleanup).
         .onChange(of: model.history.count) { checked.formIntersection(Set(model.closed.map(\.sessionId))) }
+    }
+
+    private var cards: some View {
+        let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
+        return ScrollView {
+            VStack(spacing: 10) {
+                ForEach(model.approvals) {
+                    ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget, roomy: true)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
+        }
+        .layoutPriority(1)
     }
 
     private var controls: some View {
@@ -471,6 +490,7 @@ enum QRCode {
 
 struct UsageTab: View {
     let model: AppModel
+    var pick: (String) -> Void = { _ in }
     @AppStorage("usageChartKey") private var chartKey = "five_hour"
 
     var body: some View {
@@ -513,6 +533,8 @@ struct UsageTab: View {
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
 
+                    ProjectUsageView(model: model, pick: pick)
+
                     Text("Updated \(Fmt.ago(u.updatedAt))\(u.model.map { " · \($0)" } ?? ""). These are the same numbers /usage shows. They refresh whenever any Claude Code session is active.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                     Text("The pace line compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
@@ -542,6 +564,75 @@ struct UsageTab: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+    }
+}
+
+struct ProjectUsageView: View {
+    let model: AppModel
+    let pick: (String) -> Void
+    @AppStorage("projectUsageSpan") private var span = "five_hour"
+    @State private var entries: [ProjectUsage.Entry]?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let shown = 8
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(span == "five_hour" ? "Tokens by project, last 5 hours" : "Tokens by project, last 7 days")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Picker("", selection: $span) {
+                    Text("5 hours").tag("five_hour")
+                    Text("7 days").tag("seven_day")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            if let entries {
+                if entries.isEmpty {
+                    Text("No Claude Code replies in this period.").font(.system(size: 12)).foregroundStyle(.secondary)
+                } else {
+                    let most = Double(entries[0].tokens)
+                    ForEach(entries.prefix(Self.shown)) { e in bar(e, share: Double(e.tokens) / most) }
+                    if entries.count > Self.shown {
+                        Text("and \(entries.count - Self.shown) more").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text("Input, output and cache-write tokens read from transcripts. Click a project to see its sessions.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+        .task(id: span) {
+            entries = nil
+            let since = Date().addingTimeInterval(span == "five_hour" ? -5 * 3600 : -7 * 86400)
+            let e = await model.projectUsage(since: since)
+            withAnimation(Motion.spring(reduced: reduceMotion)) { entries = e }
+        }
+    }
+
+    private func bar(_ e: ProjectUsage.Entry, share: Double) -> some View {
+        Button { pick(e.folder) } label: {
+            HStack(spacing: 10) {
+                Text(Fmt.folderName(e.folder)).lineLimit(1).truncationMode(.middle)
+                    .frame(width: 150, alignment: .leading)
+                GeometryReader { g in
+                    RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.75))
+                        .frame(width: max(3, g.size.width * share))
+                        .frame(maxHeight: .infinity)
+                }
+                .frame(height: 14)
+                Text(Fmt.tokens(e.tokens)).monospacedDigit().foregroundStyle(.secondary)
+                    .frame(width: 56, alignment: .trailing)
+            }
+            .font(.system(size: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .help("Show sessions in \(Fmt.shortPath(e.folder))")
+        .accessibilityLabel("\(Fmt.folderName(e.folder)), \(Fmt.tokens(e.tokens)) tokens")
     }
 }
 
