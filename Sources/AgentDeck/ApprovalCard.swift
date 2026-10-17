@@ -5,7 +5,12 @@ struct ApprovalCard: View {
     let model: AppModel
     let request: ApprovalRequest
     var hotkeyTarget = false
+    var roomy = false
+    var selected = false
     @State private var expanded = false
+    @State private var denying = false
+    @State private var reason = ""
+    @FocusState private var reasonFocused: Bool
     @State private var arrived = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let previewLines = 8
@@ -13,7 +18,7 @@ struct ApprovalCard: View {
     private var outcome: ApprovalAnswer? { model.outcomes[request.id] }
     private var tint: Color {
         switch outcome {
-        case .deny: .red
+        case .deny, .denyWith: .red
         case .allow, .acceptEdits, .answers: .green
         case .terminal, nil: .orange
         }
@@ -41,7 +46,7 @@ struct ApprovalCard: View {
             }
             if !request.detail.isEmpty {
                 let lines = request.detail.split(separator: "\n", omittingEmptySubsequences: false)
-                let long = lines.count > Self.previewLines
+                let long = !roomy && lines.count > Self.previewLines
                 ScrollView {
                     Text(styled(long && !expanded ? lines.prefix(Self.previewLines).joined(separator: "\n") : request.detail))
                         .font(.system(size: 11, design: .monospaced))
@@ -49,7 +54,7 @@ struct ApprovalCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(6)
                 }
-                .frame(maxHeight: expanded ? 260 : 150)
+                .frame(maxHeight: roomy ? 520 : expanded ? 260 : 150)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
                 if long {
@@ -66,7 +71,12 @@ struct ApprovalCard: View {
         .font(.system(size: 12))
         .controlSize(.small)
         .padding(8)
+        .padding(.leading, 4)
         .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.1)))
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 8).fill(tint).frame(width: 4)
+        }
+        .overlay { if selected { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2) } }
         .overlay {
             if hotkeyTarget && outcome == nil && model.menuOpen && !reduceMotion {
                 RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange, lineWidth: 1.5)
@@ -76,7 +86,7 @@ struct ApprovalCard: View {
         }
         .overlay { if let o = outcome { outcomeView(o) } }
         .animation(Motion.snappy(reduceMotion), value: outcome)
-        .keyframeAnimator(initialValue: 0.0, trigger: outcome == .deny) { v, x in
+        .keyframeAnimator(initialValue: 0.0, trigger: isDenied) { v, x in
             v.offset(x: x)
         } keyframes: { _ in
             KeyframeTrack {
@@ -90,9 +100,14 @@ struct ApprovalCard: View {
         .onAppear { if !reduceMotion { arrived = true } }
     }
 
+    private var isDenied: Bool {
+        switch outcome { case .deny, .denyWith: true; default: false }
+    }
+
     private func outcomeView(_ o: ApprovalAnswer) -> some View {
         let (text, symbol, color): (String, String, Color) = switch o {
         case .deny: ("Denied", "xmark.circle.fill", .red)
+        case .denyWith: ("Denied, reason sent", "xmark.circle.fill", .red)
         case .answers: ("Answer sent", "checkmark.circle.fill", .green)
         case .allow(let always): (request.kind == .plan ? "Plan approved" : always ? "Always allowed" : "Allowed", "checkmark.circle.fill", .green)
         case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
@@ -135,10 +150,33 @@ struct ApprovalCard: View {
         }
     }
 
-    private var permissionButtons: some View {
+    @ViewBuilder private var permissionButtons: some View {
+        if denying { denyForm } else { decideButtons }
+    }
+
+    private var denyForm: some View {
+        HStack(spacing: 6) {
+            TextField("Tell Claude why (optional)", text: $reason)
+                .textFieldStyle(.roundedBorder)
+                .focused($reasonFocused)
+                .onSubmit(deny)
+                .onAppear { reasonFocused = true }
+                .onExitCommand { denying = false }
+            Button("Cancel") { denying = false }
+            Button("Deny", role: .destructive, action: deny).keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func deny() {
+        let why = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        model.answer(request.id, why.isEmpty ? .deny : .denyWith(reason: why))
+    }
+
+    private var decideButtons: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Button("Deny", role: .destructive) { model.answer(request.id, .deny) }
+                Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
+                    .help("Deny, and optionally tell Claude why")
                 Spacer()
                 if request.alwaysLabel != nil {
                     Button("Always allow") { model.answer(request.id, .allow(always: true)) }

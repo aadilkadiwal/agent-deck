@@ -39,6 +39,8 @@ struct BarLabel: View {
             case .ringOnly: EmptyView()
             }
         }
+        .help(model.barSummary)
+        .accessibilityLabel(model.barSummary)
         // Menu bar labels take only images, so the dot blinks by swapping them.
         .task(id: model.needsYou) {
             guard model.needsYou, !reduceMotion else { blinkOff = false; return }
