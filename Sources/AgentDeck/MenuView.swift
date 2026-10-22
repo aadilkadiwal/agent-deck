@@ -20,11 +20,12 @@ struct MenuView: View {
     @FocusState private var listFocused: Bool
 
     enum Confirm: Equatable {
-        case stop(LiveSession), openWithPhone(LiveSession), delete(HistorySession)
-        case renameLive(LiveSession), renameClosed(HistorySession)
+        case stop(LiveSession), openWithPhone(LiveSession), clearContext(LiveSession), delete(HistorySession)
+        case renameLive(LiveSession), renameClosed(HistorySession), stopIdle
         var sessionId: String {
             switch self {
-            case .stop(let s), .openWithPhone(let s), .renameLive(let s): return s.sessionId
+            case .stopIdle: return "idle-sessions"
+            case .stop(let s), .openWithPhone(let s), .clearContext(let s), .renameLive(let s): return s.sessionId
             case .delete(let h), .renameClosed(let h): return h.sessionId
             }
         }
@@ -74,6 +75,7 @@ struct MenuView: View {
             VStack(alignment: .leading, spacing: 0) {
                 healthBanner
                 if !model.live.isEmpty { statusStrip }
+                if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 6).transition(slide(from: .top)) }
                 usage
                 Divider().padding(.vertical, 6)
                 ZStack(alignment: .top) {
@@ -103,6 +105,10 @@ struct MenuView: View {
             .onKeyPress(keys: [.upArrow, .downArrow]) { press in move(press.key == .downArrow ? 1 : -1, proxy); return .handled }
             .onKeyPress(.return, phases: .down) { press in activate(command: press.modifiers.contains(.command)) }
             .onKeyPress(characters: CharacterSet(charactersIn: "1234")) { press in answerOption(press.characters) }
+            .onKeyPress(characters: CharacterSet(charactersIn: "pkr")) { press in
+                press.modifiers.isEmpty ? rowKey(press.characters) : .ignored
+            }
+            .onKeyPress(keys: [.delete]) { press in press.modifiers.contains(.command) ? rowKey("\u{7F}", command: true) : .ignored }
             .onKeyPress(.escape) {
                 if previewing != nil { withAnimation(Motion.snappy(reduceMotion)) { previewing = nil }; return .handled }
                 if only != nil { only = nil; return .handled }
@@ -116,6 +122,8 @@ struct MenuView: View {
                 // ⌘F: jump to search.
                 Button("") { showingNew = false; searchAsked = true; searchFocused = true }
                     .keyboardShortcut("f").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { Task { await model.refreshNow() } }
+                    .keyboardShortcut("r").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             }
             .onAppear {
                 model.menuOpen = true
@@ -179,9 +187,9 @@ struct MenuView: View {
     @ViewBuilder private var healthBanner: some View {
         let missing = model.missingHooks
         if !missing.isEmpty {
-            let text = !missing.isDisjoint(with: ["claude", "codex"]) ? "Approvals off: a hook is missing"
-                : missing.contains("statusLine") ? "Usage off: the status line isn't set up"
-                : "Gemini CLI sessions won't show: a hook is missing"
+            let text = !missing.isDisjoint(with: ["claude", "codex"]) ? "Prompts can't be answered here until setup is repaired"
+                : missing.contains("statusLine") ? "Usage and context won't update until setup is repaired"
+                : "Gemini CLI sessions won't show until setup is repaired"
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(text).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
@@ -206,9 +214,13 @@ struct MenuView: View {
         .padding(.horizontal, 4).padding(.bottom, 8)
     }
 
-    private func chip(_ state: LiveSession.State, _ word: String, _ color: Color) -> some View {
+    @ViewBuilder private func chip(_ state: LiveSession.State, _ word: String, _ color: Color) -> some View {
         let n = model.count(state), on = only == state
-        return Button {
+        if n > 0 || on { chipButton(state, word, color, n: n, on: on) }
+    }
+
+    private func chipButton(_ state: LiveSession.State, _ word: String, _ color: Color, n: Int, on: Bool) -> some View {
+        Button {
             withAnimation(Motion.snappy(reduceMotion)) { only = on ? nil : state; cursor = nil }
         } label: {
             Text("\(n) \(word)")
@@ -219,8 +231,11 @@ struct MenuView: View {
                 .overlay(Capsule().strokeBorder(color.opacity(on ? 1 : 0.6), lineWidth: on ? 1.5 : 1))
         }
         .buttonStyle(PressableStyle())
-        .disabled(n == 0 && !on)
-        .opacity(n == 0 && !on ? 0.45 : 1)
+        .contextMenu {
+            if state == .idle {
+                Button("Stop \(n) idle session\(n == 1 ? "" : "s")…") { confirm = .stopIdle }
+            }
+        }
         .help(on ? "Show all sessions" : "Show only sessions that are \(word == "waiting" ? "waiting for you" : word)")
         .accessibilityAddTraits(on ? .isSelected : [])
     }
@@ -313,7 +328,7 @@ struct MenuView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    SectionHeader(title: "\(only.map(stateTitle) ?? "RUNNING") · \(running.count)", trailing: only == nil ? "newest first" : "esc shows all")
+                    SectionHeader(title: "\(only.map(stateTitle) ?? "RUNNING") · \(running.count)", trailing: only == nil ? nil : "esc shows all")
                     if running.isEmpty {
                         HStack {
                             Text(searching ? "No running session matches." : only != nil ? "None right now." : "No Claude Code sessions running.")
@@ -395,7 +410,7 @@ struct MenuView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(highlighted(model.displayName(s), search)).font(.system(size: 13, weight: waiting ? .semibold : .medium)).lineLimit(1)
-                        if s.kind == .background { Pill(text: "BG") }
+                        if s.kind == .background { Pill(text: "BG").help("Background session: it runs without a terminal window") }
                         if s.agent != .claude { Pill(text: s.agent.label.uppercased(), color: s.agent == .codex ? .teal : .blue) }
                     }
                     Text(highlighted([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "), search))
@@ -419,6 +434,8 @@ struct MenuView: View {
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
                     .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
+                Button("Clear context…") { askClear(s) }
+                    .disabled(s.agent != .claude || s.kind == .background || s.state == .busy || model.typingBlockers[s.sessionId] != nil)
                 Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
                 if let url = s.phoneURL { Button("Copy phone link") { copy(url.absoluteString) } }
                 Button("Copy session ID") { copy(s.sessionId) }
@@ -429,14 +446,47 @@ struct MenuView: View {
         .id(Item.live(s.sessionId))
     }
 
+    private func togglePhone(_ s: LiveSession) {
+        switch (s.isOnPhone, s.kind) {
+        case (false, .interactive): model.phoneOn(s)    // keeps running here too
+        case (true, .interactive): model.phoneOff(s)    // keeps running here
+        case (false, .background): confirm = .openWithPhone(s)
+        case (true, .background): confirm = .stop(s)    // phone is its only window
+        }
+    }
+
+    private func askClear(_ s: LiveSession) {
+        if let c = model.context[s.sessionId], c.percent < 10 { model.clearContext(s) } else { confirm = .clearContext(s) }
+    }
+
+    private func clearBlocker(_ s: LiveSession) -> String? {
+        if s.kind == .background { return "It has no window to clear." }
+        return model.typingBlockers[s.sessionId] ?? (s.state == .busy ? "Available when it's idle. It's working on a reply." : nil)
+    }
+
+    private func rowKey(_ key: String, command: Bool = false) -> KeyPress.Result {
+        guard case .live(let sid) = cursor, let s = model.live.first(where: { $0.sessionId == sid }), s.agent == .claude,
+              !model.working.contains(sid) else { return .ignored }
+        let unavailable = { (why: String) in model.banner = Banner(text: why, isError: true) }
+        switch key {
+        case "p": if let why = model.typingBlockers[sid] { unavailable(why) } else { togglePhone(s) }
+        case "k": if let why = clearBlocker(s) { unavailable(why) } else { askClear(s) }
+        case "r":
+            if s.kind == .background { unavailable("It has no window to rename it in.") }
+            else if let why = model.typingBlockers[sid] { unavailable(why) } else { confirm = .renameLive(s) }
+        case "\u{7F}" where command: confirm = .stop(s)
+        default: return .ignored
+        }
+        return .handled
+    }
+
     @ViewBuilder private func rowButtons(_ s: LiveSession) -> some View {
         IconButton(symbol: "iphone", on: s.isOnPhone, help: model.typingBlockers[s.sessionId] ?? phoneHelp(s),
-                   dimmed: model.typingBlockers[s.sessionId] != nil) {
-            switch (s.isOnPhone, s.kind) {
-            case (false, .interactive): model.phoneOn(s)    // keeps running here too
-            case (true, .interactive): model.phoneOff(s)    // keeps running here
-            case (false, .background): confirm = .openWithPhone(s)
-            case (true, .background): confirm = .stop(s)    // phone is its only window
+                   dimmed: model.typingBlockers[s.sessionId] != nil) { togglePhone(s) }
+        if s.kind == .interactive {
+            let why = clearBlocker(s)
+            IconButton(symbol: "eraser", help: why ?? "Clear context (/clear). The conversation stays in Recent.", dimmed: why != nil) {
+                askClear(s)
             }
         }
         IconButton(symbol: s.isLeftover ? "xmark" : "stop.fill",
@@ -513,6 +563,19 @@ struct MenuView: View {
                 Spacer()
                 Button("Cancel") { confirm = nil }
                 Button(s.isLeftover ? "Clear" : "Stop") { confirm = nil; model.stop(s) }.keyboardShortcut(.defaultAction)
+            case .stopIdle:
+                let idle = model.live.filter { $0.state == .idle && !$0.isLeftover && $0.agent == .claude }
+                Text("Stop \(idle.count) idle session\(idle.count == 1 ? "" : "s")? Each can be resumed from Recent.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Cancel") { confirm = nil }
+                Button("Stop all") { confirm = nil; idle.forEach(model.stop) }.keyboardShortcut(.defaultAction)
+            case .clearContext(let s):
+                Text("Clear its context? It starts fresh in the same window. Undo brings this conversation back.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Cancel") { confirm = nil }
+                Button("Clear") { confirm = nil; model.clearContext(s) }.keyboardShortcut(.defaultAction)
             case .openWithPhone(let s):
                 Text("It has no window. Open it in iTerm with phone access on?").fixedSize(horizontal: false, vertical: true)
                 Spacer()
@@ -537,7 +600,7 @@ struct MenuView: View {
         let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\($0) agent\($0 == 1 ? "" : "s")" : nil }
         let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
         let text = [doing ?? stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
-        Group {
+        HStack(spacing: 6) {
             if let since = model.busySince[s.sessionId], s.state == .busy {
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let t = max(0, Int(ctx.date.timeIntervalSince(since)))
@@ -548,12 +611,13 @@ struct MenuView: View {
             } else {
                 Text(text)
             }
+            if let c = model.context[s.sessionId] { ContextBar(reading: c).layoutPriority(1) }
         }
         .font(.system(size: 11)).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
     }
 
     private func stateText(_ s: LiveSession) -> String {
-        if s.isLeftover { return "not running · leftover" }
+        if s.isLeftover { return "not running · old entry" }
         switch s.state {
         case .busy: return "working"
         case .idle: return "idle"
@@ -563,16 +627,17 @@ struct MenuView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("↑↓ move · ⏎ open · ⌘⏎ approve · 1–4 answer")
+            let onRow: Bool = { if case .live = cursor { return true }; return false }()
+            Text(onRow ? "⏎ open · P phone · K clear · R rename · ⌘⌫ stop" : "↑↓ move · ⏎ open · ⌘⏎ approve · 1–4 answer")
                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
-                .accessibilityLabel("Keyboard: arrows move, Return opens, Command Return approves, 1 to 4 answers")
+                .accessibilityLabel(onRow ? "Keyboard: Return opens, P phone, K clear context, R rename, Command Delete stops"
+                                          : "Keyboard: arrows move, Return opens, Command Return approves, 1 to 4 answers")
             HStack {
                 Button { showingNew.toggle() } label: { Label(showingNew ? "Back" : "New session…", systemImage: showingNew ? "chevron.left" : "plus") }
                     .keyboardShortcut("n")
                 Spacer()
                 Button("View details…") { showDetails(tab: .sessions) }
-                IconButton(symbol: "arrow.clockwise", help: "Refresh now", dimmed: model.refreshing) { Task { await model.refreshNow() } }
                 IconButton(symbol: "power", help: "Quit Agent Deck") { NSApp.terminate(nil) }
             }
             .buttonStyle(.borderless)

@@ -16,5 +16,6 @@ public struct ClaudePaths: Sendable {
     public var settingsFile: URL { claudeDir.appendingPathComponent("settings.json") }
     public var appDir: URL { claudeDir.appendingPathComponent("agent-deck") }
     public var statusFile: URL { appDir.appendingPathComponent("status.json") }
+    public var contextDir: URL { appDir.appendingPathComponent("context") }
     public var approvalSocket: URL { appDir.appendingPathComponent("approvals.sock") }
 }

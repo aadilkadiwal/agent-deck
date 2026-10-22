@@ -60,3 +60,23 @@ public struct UsageSnapshot: Equatable, Sendable {
         return parse(data, updatedAt: mtime)
     }
 }
+
+public struct ContextReading: Equatable, Sendable {
+    public let percent: Int
+    public let updatedAt: Date
+}
+
+public enum ContextUsage {
+    static func parse(_ data: Data) -> Int? {
+        guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pct = ((o["context_window"] as? [String: Any])?["used_percentage"] as? NSNumber)?.doubleValue else { return nil }
+        return Int(min(max(pct, 0), 100).rounded())
+    }
+
+    public static func load(_ paths: ClaudePaths, sessionId: String) -> ContextReading? {
+        let url = paths.contextDir.appendingPathComponent("\(sessionId).json")
+        guard let pct = (try? Data(contentsOf: url)).flatMap(parse) else { return nil }
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+        return ContextReading(percent: pct, updatedAt: mtime)
+    }
+}

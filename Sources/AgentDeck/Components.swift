@@ -67,6 +67,22 @@ struct Pill: View {
     }
 }
 
+struct ContextBar: View {
+    let reading: ContextReading
+    var body: some View {
+        let percent = reading.percent
+        let tint: Color = percent >= 90 ? .red : .secondary
+        HStack(spacing: 4) {
+            Capsule().fill(Color.primary.opacity(0.12)).frame(width: 36, height: 4)
+                .overlay(alignment: .leading) { Capsule().fill(tint).frame(width: 36 * CGFloat(percent) / 100, height: 4) }
+            Text("\(percent)%").monospacedDigit().foregroundStyle(tint)
+        }
+        .help("Context: \(percent)% used · updated \(Fmt.ago(reading.updatedAt))")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context \(percent) percent used")
+    }
+}
+
 struct IconButton: View {
     let symbol: String
     var on = false
@@ -74,16 +90,19 @@ struct IconButton: View {
     var dimmed = false
     let action: () -> Void
     var body: some View {
-        Button(action: { if !dimmed { action() } }) {
+        Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12))
                 .frame(width: 26, height: 22)
                 .foregroundStyle(on ? Color.accentColor : .secondary)
                 .background(RoundedRectangle(cornerRadius: 6).fill(on ? Color.accentColor.opacity(0.15) : .clear))
         }
         .buttonStyle(.borderless)
+        .disabled(dimmed)
         .opacity(dimmed ? 0.35 : 1)
-        .help(help)
         .accessibilityLabel(help)
+        // A disabled button shows no tooltip, so the reason it's unavailable hangs on the frame around it.
+        .contentShape(Rectangle())
+        .help(help)
     }
 }
 
