@@ -126,7 +126,7 @@ struct SessionRow: Identifiable {
     }
     var statusColor: Color {
         guard let s = live, !s.isLeftover else { return .secondary }
-        switch s.state { case .busy: return .green; case .idle: return .accentColor; case .blocked: return .orange }
+        switch s.state { case .busy: return .green; case .idle: return .secondary; case .blocked: return .orange }
     }
 }
 
@@ -297,7 +297,7 @@ struct SessionsTab: View {
                 HStack(spacing: 4) {
                     Text(highlighted(r.name, search)).lineLimit(1).help(r.saved?.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
                     if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
-                    if r.live?.kind == .background { Pill(text: "BG") }
+                    if r.live?.kind == .background { Pill(text: "BG").help("Background session: it runs without a terminal window") }
                     if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased(), color: a == .codex ? .teal : .blue) }
                 }
             }.width(min: 150, ideal: 200)

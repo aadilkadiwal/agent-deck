@@ -38,6 +38,7 @@ final class AppModel {
     private(set) var activity: [String: Activity] = [:]
     private(set) var busySince: [String: Date] = [:]
     private(set) var branches: [String: String] = [:]
+    private(set) var context: [String: ContextReading] = [:]
     private(set) var codexUsage: [CodexUsage.Limit] = []
     /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
     private(set) var health: [String: Any]?
@@ -156,6 +157,9 @@ final class AppModel {
             branches = Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a })
             activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
         }
+        let ctx = Dictionary(uniqueKeysWithValues: live.filter { $0.agent == .claude }.compactMap { s in
+            ContextUsage.load(paths, sessionId: s.sessionId).map { (s.sessionId, $0) } })
+        if ctx != context { context = ctx }
         if Date().timeIntervalSince(lastCodexUsage) > 30 {
             lastCodexUsage = Date()
             let u = await Task.detached { CodexUsage.load() }.value
@@ -253,6 +257,14 @@ final class AppModel {
 
     func phoneOff(_ s: LiveSession) {
         perform(s.sessionId, success: "\(displayName(s)) is off your phone. It's still running on your Mac.") { try await $0.setPhone(s, on: false) }
+    }
+
+    func clearContext(_ s: LiveSession) {
+        let name = displayName(s)
+        perform(s.sessionId, success: "Cleared \(name)'s context.", undo: { [weak self] in
+            guard let self, let now = self.live.first(where: { $0.pid == s.pid && $0.pid != nil }) else { return }
+            self.perform(now.sessionId, success: "Brought back \(name)'s conversation.") { try await $0.resumeHere(now, id: s.sessionId) }
+        }) { try await $0.clear(s) }
     }
 
     func rename(_ s: LiveSession, to name: String) {

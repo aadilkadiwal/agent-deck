@@ -21,6 +21,13 @@ case "$input" in
     ;;
 esac
 
+if [[ $input =~ \"session_id\":\ *\"([A-Za-z0-9-]+)\" ]] && [[ $input == *'"context_window"'* ]]; then
+  ctx="$dir/context"
+  mkdir -p "$ctx"
+  printf '%s' "$input" > "$ctx/${BASH_REMATCH[1]}.json.$$" && mv -f "$ctx/${BASH_REMATCH[1]}.json.$$" "$ctx/${BASH_REMATCH[1]}.json"
+  find "$ctx" -name '*.json' -mtime +7 -delete 2>/dev/null
+fi
+
 orig="$dir/original-statusline"
 if [ -s "$orig" ]; then
   printf '%s' "$input" | /bin/bash -c "$(cat "$orig")"

@@ -158,8 +158,8 @@ public struct ClaudeCLI: Sendable {
     /// it, exactly as you would. The session keeps running on the Mac.
     @MainActor
     public func setPhone(_ s: LiveSession, on: Bool) async throws {
-        let (pid, win) = try typingTarget(s)
-        try typeCommand("/remote-control", into: win, sessionName: s.name)
+        let (pid, win) = try typingTarget(s, busyOK: true)
+        try typeCommand("/remote-control", into: win, session: s)
         if on {
             guard await waitForPhone(pid: pid, on: true, timeout: 15) else {
                 throw Failure.failed("Remote control didn't start. Check the session's window.")
@@ -180,22 +180,46 @@ public struct ClaudeCLI: Sendable {
     public func rename(_ s: LiveSession, to name: String) async throws {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
         guard !title.isEmpty else { return }
-        let (_, win) = try typingTarget(s)
-        try typeCommand("/rename \(title)", into: win, sessionName: s.name)
+        let (_, win) = try typingTarget(s, busyOK: true)
+        try typeCommand("/rename \(title)", into: win, session: s)
     }
 
-    /// Only idle iTerm sessions: typing into a busy session or a pending question could answer it by accident.
+    /// /clear gives the session a new id, so a changed id in its pid file confirms it. Not while busy:
+    /// /clear isn't an immediate command and would wait in its queue.
     @MainActor
-    func typingTarget(_ s: LiveSession) throws -> (Int32, SessionWindow) {
+    public func clear(_ s: LiveSession) async throws {
+        let (pid, win) = try typingTarget(s, busyOK: false)
+        try typeCommand("/clear", into: win, session: s)
+        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
+        guard await waitFor(timeout: 8, { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.sessionId != s.sessionId }) else {
+            throw Failure.failed("Couldn't confirm the clear. Check the session's window.")
+        }
+    }
+
+    @MainActor
+    public func resumeHere(_ s: LiveSession, id: String) async throws {
+        let (pid, win) = try typingTarget(s, busyOK: false)
+        try typeCommand("/resume \(id)", into: win, session: s)
+        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
+        guard await waitFor(timeout: 10, { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.sessionId == id }) else {
+            throw Failure.failed("Couldn't confirm the conversation came back. Check the session's window.")
+        }
+    }
+
+    /// iTerm sessions that aren't asking anything: typing into a pending question could answer it by accident.
+    /// `busyOK`: /remote-control and /rename run at once even mid-reply (Claude Code's "immediate"
+    /// commands), so they work while it's working or running agents. Other commands wait for idle.
+    @MainActor
+    func typingTarget(_ s: LiveSession, busyOK: Bool) throws -> (Int32, SessionWindow) {
         guard s.kind == .interactive, let pid = s.pid else { throw Failure.failed("\(s.name) has no window to type into.") }
-        if let why = Self.typingBlocker(s) { throw Failure.failed(why) }
+        if let why = Self.typingBlocker(s, busyOK: busyOK) { throw Failure.failed(why) }
         return (pid, try SessionWindow.find(pid: pid))
     }
 
     @MainActor
-    public static func typingBlocker(_ s: LiveSession) -> String? {
+    public static func typingBlocker(_ s: LiveSession, busyOK: Bool = true) -> String? {
         if s.kind == .background { return nil }   // handled by reopening in iTerm, not typing
-        if s.state == .busy { return "Available when it's idle. It's working on a reply." }
+        if s.state == .busy && !busyOK { return "Available when it's idle. It's working on a reply." }
         if s.state == .blocked { return "Available after you answer its question." }
         guard let pid = s.pid else { return "This session has no window." }
         switch owningApp(pid: pid)?.bundleIdentifier {
@@ -206,14 +230,20 @@ public struct ClaudeCLI: Sendable {
 
     /// Types a command and presses Return, without ever mixing it into text you were typing: type it,
     /// read the prompt line back; it must be exactly the command (typing replaces a grey suggestion).
-    /// Anything else means there was a draft, so erase what was typed and stop.
+    /// Anything else means there was a draft, so erase what was typed and stop. A busy session can
+    /// start asking something meanwhile, so its pid file is checked again right before Return.
     @MainActor
-    func typeCommand(_ command: String, into win: SessionWindow, sessionName: String) throws {
+    func typeCommand(_ command: String, into win: SessionWindow, session s: LiveSession) throws {
         try win.type(command, enter: false)
         Thread.sleep(forTimeInterval: 0.5)
         guard SessionWindow.draft(in: try win.screen()) == command else {
             try win.erase(command.count)
-            throw Failure.failed("\(sessionName) has unsent text in its prompt. Send or clear it, then try again.")
+            throw Failure.failed("\(s.name) has unsent text in its prompt. Send or clear it, then try again.")
+        }
+        let now = s.pid.flatMap { try? Data(contentsOf: paths.sessionsDir.appendingPathComponent("\($0).json")) }.flatMap(LiveSessions.parsePidFile)
+        if now?.state == .blocked {
+            try win.erase(command.count)
+            throw Failure.failed("\(s.name) just asked you something. Answer it, then try again.")
         }
         try win.type("", enter: true)
     }
