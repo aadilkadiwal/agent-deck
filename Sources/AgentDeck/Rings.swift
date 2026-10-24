@@ -16,7 +16,15 @@ enum Motion {
 /// A steady color per session, so a prompt card matches its row. No green or orange: they mean working / needs you.
 enum SessionColor {
     private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan,
-                                           Color(red: 0.39, green: 0.45, blue: 0.55), Color(red: 0.61, green: 0.31, blue: 0.59)]
+                                           adaptive(light: (0.39, 0.45, 0.55), dark: (0.58, 0.64, 0.74)),
+                                           adaptive(light: (0.61, 0.31, 0.59), dark: (0.80, 0.52, 0.78))]
+
+    private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
 
     static func of(_ sessionId: String) -> Color {
         // String.hashValue changes every launch; this doesn't.
@@ -43,7 +51,7 @@ struct Ring: View {
                 .trim(from: 0, to: shown / 100)
                 .stroke(Level.color(shown), style: StrokeStyle(lineWidth: line, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            if showsLabel {
+            if showsLabel && size * 0.24 >= 11 {
                 Text("\(Int(shown.rounded()))%")
                     .font(.system(size: size * 0.24, weight: .semibold))
                     .monospacedDigit()
@@ -68,7 +76,7 @@ struct Ring: View {
 
 struct UsageTile: View {
     let window: LimitWindow
-    var size: CGFloat = 44
+    var size: CGFloat = 48
     var forecast: Forecast = .unknown
     var delay: Double = 0
 
@@ -77,10 +85,10 @@ struct UsageTile: View {
         HStack(spacing: 10) {
             Ring(percent: pct, size: size, line: size / 8.5, delay: delay)
             VStack(alignment: .leading, spacing: 2) {
-                Text(window.label).font(.system(size: 13, weight: .semibold))
-                Text(Fmt.resets(window.resetsAt)).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(window.label).font(.body.weight(.semibold))
+                Text(Fmt.resets(window.resetsAt)).font(.subheadline).foregroundStyle(.secondary)
                 if let f = Fmt.forecast(forecast) {
-                    Text(f).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                    Text(f).font(.subheadline.weight(.medium)).lineLimit(2)
                         .foregroundStyle(forecast == .safeUntilReset ? Color.secondary : Color.orange)
                 }
             }

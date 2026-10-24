@@ -24,7 +24,7 @@ final class PinnedPanel: NSObject, NSWindowDelegate {
         p.hidesOnDeactivate = false
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        p.contentMinSize = NSSize(width: 300, height: 160)
+        p.contentMinSize = NSSize(width: 260, height: 80)
         p.contentView = NSHostingView(rootView: PinnedView(model: model))
         p.delegate = self
         if !p.setFrameUsingName("AgentDeckPinned"), let screen = NSScreen.main?.visibleFrame {
@@ -48,55 +48,75 @@ final class PinnedPanel: NSObject, NSWindowDelegate {
 
 struct PinnedView: View {
     let model: AppModel
+    @AppStorage("pinnedSmall") private var small = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // Small mode lists every session on one line, waiting ones included; full mode shows their cards instead.
     private var rows: [LiveSession] {
-        let carded = Set(model.approvals.map(\.sessionId))
+        let carded = small ? [] : Set(model.approvals.map(\.sessionId))
         return model.live.filter { !carded.contains($0.sessionId) }
     }
 
     var body: some View {
         let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
         ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
-                CompactUsage(model: model) { model.showDetails?(.usage) }
-                ForEach(model.approvals) {
-                    ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget)
-                        .transition(.opacity)
+            VStack(alignment: .leading, spacing: small ? 4 : 8) {
+                HStack(spacing: 4) {
+                    CompactUsage(model: model) { model.showDetails?(.usage) }
+                    IconButton(symbol: small ? "rectangle.expand.vertical" : "rectangle.compress.vertical",
+                               help: small ? "Show prompt cards" : "Small: one line per session") { small.toggle() }
                 }
-                if !model.approvals.isEmpty && !rows.isEmpty { Divider().padding(.vertical, 2) }
-                ForEach(rows) { PinnedRow(model: model, session: $0) }
+                if !small {
+                    ForEach(model.approvals) {
+                        ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget)
+                            .transition(.opacity)
+                    }
+                    if !model.approvals.isEmpty && !rows.isEmpty { Divider().padding(.vertical, 4) }
+                }
+                ForEach(rows) { PinnedRow(model: model, session: $0, small: small) }
                 if model.live.isEmpty {
-                    Text("No sessions running.").font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
+                    Text("No sessions running.").font(.callout).foregroundStyle(.secondary).padding(8)
                 }
             }
-            .padding(10)
-            .animation(.easeOut(duration: 0.2), value: model.approvals.map(\.id))
+            .padding(small ? 4 : 8)
+            .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
+            .animation(Motion.spring(reduced: reduceMotion), value: small)
         }
-        .frame(minWidth: 300, minHeight: 160)
+        .frame(minWidth: 260, minHeight: 80)
     }
 }
 
 private struct PinnedRow: View {
     let model: AppModel
     let session: LiveSession
+    let small: Bool
 
     var body: some View {
         let s = session
         let waiting = s.state == .blocked && !s.isLeftover
+        let card = model.pendingApprovals.first { $0.sessionId == s.sessionId }
         HoverRow {
-            Capsule().fill(waiting ? Color.orange : SessionColor.of(s.sessionId)).frame(width: 3, height: 18)
+            Capsule().fill(waiting ? Color.orange : SessionColor.of(s.sessionId)).frame(width: 3, height: small ? 14 : 18)
             StateDot(state: s.isLeftover ? nil : s.state, animated: true)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text(model.displayName(s)).font(.system(size: 12, weight: waiting ? .semibold : .medium)).lineLimit(1)
+                    Text(model.displayName(s)).font(.callout.weight(waiting ? .semibold : .medium)).lineLimit(1)
                     if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(Color.accentColor) }
                 }
-                if ActivityLine.isShown(s, model) { ActivityLine(model: model, session: s) }
+                if !small, ActivityLine.isShown(s, model) { ActivityLine(model: model, session: s) }
             }
             Spacer(minLength: 4)
-            if let c = model.context[s.sessionId] { ContextBar(reading: c) }
-        } action: { model.open(s) }
-        .background { if waiting { RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(0.08)) } }
-        .help(s.kind == .interactive ? "Show its window" : "Open in iTerm")
+            if small && waiting {
+                Text("waiting").font(.subheadline).foregroundStyle(.orange)
+            } else if let c = model.context[s.sessionId] {
+                ContextBar(reading: c)
+            }
+        } action: {
+            guard let card else { model.open(s); return }
+            model.focusApproval = card.id
+            if !model.menuOpen { StatusMenu.toggle() }
+        }
+        .background { if waiting { RoundedRectangle(cornerRadius: Radius.row).fill(Color.orange.opacity(0.08)) } }
+        .help(card != nil ? "Answer it in the menu" : s.kind == .interactive ? "Show its window" : "Open in iTerm")
     }
 }

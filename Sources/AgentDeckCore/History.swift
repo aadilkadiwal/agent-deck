@@ -237,59 +237,81 @@ public struct Conversation: Equatable, Sendable {
     static let notPrompt = ["<local-command-", "<command-", "<system-reminder>", "<bash-", "<user-memory-input>", "<task-notification>"]
     static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
 
-    public static func load(_ url: URL) -> Conversation {
-        guard let data = try? Data(contentsOf: url) else { return Conversation() }
-        return parse(data)
-    }
+    /// Reads a transcript as it grows: each `read()` parses only the lines added since the last one.
+    public struct Reader: Sendable {
+        public let url: URL
+        private var offset: UInt64 = 0
+        private var entries: [Entry] = []
+        private var order: [String] = []
+        private var created = Set<String>()
 
-    static func parse(_ data: Data) -> Conversation {
-        let limit = 300
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var entries: [Entry] = []
-        var order: [String] = [], created = Set<String>()
-        func add(_ kind: Kind, _ text: String, _ at: Date?) {
+        public init(url: URL) { self.url = url }
+
+        public var conversation: Conversation {
+            var c = Conversation()
+            c.dropped = max(0, entries.count - limit)
+            c.entries = Array(entries.suffix(limit))
+            c.files = order.map { File(path: $0, created: created.contains($0)) }
+            return c
+        }
+
+        private let limit = 300
+
+        public mutating func read() {
+            guard let fh = try? FileHandle(forReadingFrom: url) else { return }
+            defer { try? fh.close() }
+            // A file shorter than what was read was rewritten, not appended to: start over.
+            if let end = try? fh.seekToEnd(), end < offset { self = Reader(url: url) }
+            guard (try? fh.seek(toOffset: offset)) != nil, let data = try? fh.readToEnd(), !data.isEmpty,
+                  let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return }
+            // A line still being written has no newline yet; it's read next time.
+            let complete = data[data.startIndex...lastNewline]
+            offset += UInt64(complete.count)
+            parse(complete)
+        }
+
+        private mutating func add(_ kind: Kind, _ text: String, _ at: Date?) {
             let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { return }
             entries.append(Entry(id: entries.count, kind: kind, text: t.count > maxText ? String(t.prefix(maxText)) + "…" : t, at: at))
         }
-        for line in data.split(separator: UInt8(ascii: "\n")) {
-            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  o["isSidechain"] as? Bool != true else { continue }
-            let type = o["type"] as? String
-            guard type == "user" || type == "assistant" else { continue }
-            let at = (o["timestamp"] as? String).flatMap(iso.date(from:))
-            let content = (o["message"] as? [String: Any])?["content"]
-            if type == "user" {
-                if let r = o["toolUseResult"] as? [String: Any], r["type"] as? String == "create", let p = r["filePath"] as? String { created.insert(p) }
-                guard o["isMeta"] as? Bool != true, o["isCompactSummary"] as? Bool != true else { continue }
-                let text: String
-                if let s = content as? String { text = s }
-                else if let parts = content as? [[String: Any]], !parts.contains(where: { $0["type"] as? String == "tool_result" }) {
-                    text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
-                } else { continue }
-                if let cmd = command(text) { add(.command, cmd, at) }
-                else if text.hasPrefix("[Request interrupted") { add(.command, "Interrupted", at) }
-                else if !notPrompt.contains(where: text.hasPrefix) { add(.prompt, text, at) }
-                continue
-            }
-            for part in content as? [[String: Any]] ?? [] {
-                switch part["type"] as? String {
-                case "text": add(.reply, part["text"] as? String ?? "", at)
-                case "tool_use":
-                    let name = part["name"] as? String ?? "Tool"
-                    let input = part["input"] as? [String: Any] ?? [:]
-                    if editTools.contains(name), let p = (input["file_path"] ?? input["notebook_path"]) as? String, !order.contains(p) { order.append(p) }
-                    add(.tool, toolLine(name, input), at)
-                default: break
+
+        private mutating func parse(_ data: Data) {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            for line in data.split(separator: UInt8(ascii: "\n")) {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      o["isSidechain"] as? Bool != true else { continue }
+                let type = o["type"] as? String
+                guard type == "user" || type == "assistant" else { continue }
+                let at = (o["timestamp"] as? String).flatMap(iso.date(from:))
+                let content = (o["message"] as? [String: Any])?["content"]
+                if type == "user" {
+                    if let r = o["toolUseResult"] as? [String: Any], r["type"] as? String == "create", let p = r["filePath"] as? String { created.insert(p) }
+                    guard o["isMeta"] as? Bool != true, o["isCompactSummary"] as? Bool != true else { continue }
+                    let text: String
+                    if let s = content as? String { text = s }
+                    else if let parts = content as? [[String: Any]], !parts.contains(where: { $0["type"] as? String == "tool_result" }) {
+                        text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+                    } else { continue }
+                    if let cmd = command(text) { add(.command, cmd, at) }
+                    else if text.hasPrefix("[Request interrupted") { add(.command, "Interrupted", at) }
+                    else if !notPrompt.contains(where: text.hasPrefix) { add(.prompt, text, at) }
+                    continue
+                }
+                for part in content as? [[String: Any]] ?? [] {
+                    switch part["type"] as? String {
+                    case "text": add(.reply, part["text"] as? String ?? "", at)
+                    case "tool_use":
+                        let name = part["name"] as? String ?? "Tool"
+                        let input = part["input"] as? [String: Any] ?? [:]
+                        if editTools.contains(name), let p = (input["file_path"] ?? input["notebook_path"]) as? String, !order.contains(p) { order.append(p) }
+                        add(.tool, toolLine(name, input), at)
+                    default: break
+                    }
                 }
             }
         }
-        var c = Conversation()
-        c.dropped = max(0, entries.count - limit)
-        c.entries = Array(entries.suffix(limit))
-        c.files = order.map { File(path: $0, created: created.contains($0)) }
-        return c
     }
 
     /// "<command-name>/clear</command-name>…" → "/clear"; other tags are output, not prompts.

@@ -58,7 +58,7 @@ final class Hotkeys {
     }
 }
 
-// Not ⌃⌥Space by default: macOS uses it to switch input sources.
+// Off until turned on (Settings or the welcome card). ⌃⌥O is the suggestion: ⌃⌥Space switches input sources in macOS.
 enum MenuHotkey: String, CaseIterable, Identifiable {
     case off, ctrlOptO, ctrlOptSpace, ctrlOptCmdA
     static let key = "menuHotkey"
@@ -84,5 +84,5 @@ enum MenuHotkey: String, CaseIterable, Identifiable {
 
     var modifiers: UInt32 { UInt32(controlKey | optionKey | (self == .ctrlOptCmdA ? cmdKey : 0)) }
 
-    static var current: MenuHotkey { MenuHotkey(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .ctrlOptO }
+    static var current: MenuHotkey { MenuHotkey(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .off }
 }

@@ -24,7 +24,7 @@ struct SettingsView: View {
     @AppStorage(Notifier.Key.finished) private var notifyFinished = true
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
     @AppStorage(SettingsPage.key) private var page = SettingsPage.general.rawValue
-    @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.ctrlOptO.rawValue
+    @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.off.rawValue
     @StateObject private var updater = Updater()
     @State private var cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var confirmCleanup = false
@@ -69,7 +69,7 @@ struct SettingsView: View {
                 .tag(p)
             }
         }
-        .frame(width: 560, height: 520)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 420, idealHeight: 520)
         .onAppear { updater.check() }
         .task { await model.checkHealth() }
         .task { await model.refreshStorage() }
@@ -77,25 +77,25 @@ struct SettingsView: View {
 
     @ViewBuilder private var shortcuts: some View {
         Section {
-            Picker("Open the menu from any app", selection: Binding(get: { MenuHotkey(rawValue: menuHotkey) ?? .ctrlOptO },
+            Picker("Open the menu from any app", selection: Binding(get: { MenuHotkey(rawValue: menuHotkey) ?? .off },
                                                                      set: { menuHotkey = $0.rawValue; model.setMenuHotkey($0) })) {
                 ForEach(MenuHotkey.allCases) { Text($0.title).tag($0) }
             }
             if model.menuHotkeyFailed {
-                Label("\((MenuHotkey(rawValue: menuHotkey) ?? .ctrlOptO).title) is already used by another app, so it does nothing here. Pick a different one.",
+                Label("\((MenuHotkey(rawValue: menuHotkey) ?? .off).title) is already used by another app, so it does nothing here. Pick a different one.",
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12)).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.orange)
             }
         } header: { Text("Menu") } footer: {
             Text("Opens the dropdown with the newest question selected, so ⌘⏎ answers it and esc takes you back. ⌃⌥Space also switches input sources in macOS when you have more than one keyboard language.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
         Section {
             LabeledContent("Allow the oldest permission prompt", value: "⌃⌥A")
             LabeledContent("Deny the oldest permission prompt", value: "⌃⌥D")
         } header: { Text("Prompts") } footer: {
             Text("Active only while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, can't be allowed with a shortcut: click Allow once in the menu.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
         Section {
             LabeledContent("Move · open", value: "↑ ↓ · ⏎")
@@ -109,7 +109,7 @@ struct SettingsView: View {
 
     @ViewBuilder private var healthSummary: some View {
         let missing = Self.hookKeys.filter { model.health?[$0.0] as? String == "missing" }
-        HStack(spacing: 8) {
+        Callout(tint: model.health == nil ? .clear : missing.isEmpty && model.health?["error"] == nil ? .green : .orange) {
             if model.health == nil {
                 ProgressView().controlSize(.small)
                 Text("Checking hooks…").foregroundStyle(.secondary)
@@ -121,15 +121,13 @@ struct SettingsView: View {
                 Text("All hooks working")
             } else {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("\(missing.count) need\(missing.count == 1 ? "s" : "") repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
+                Text("Needs repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
                 Spacer()
                 Button("Repair hooks") { Task { await model.repairHooks() } }.buttonStyle(.borderedProminent).controlSize(.small)
             }
             Spacer(minLength: 0)
         }
-        .font(.system(size: 12))
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill((missing.isEmpty ? Color.green : Color.orange).opacity(model.health == nil ? 0 : 0.1)))
+        .font(.callout)
         .animation(Motion.fast(reduceMotion), value: missing.count)
     }
 
@@ -142,14 +140,14 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             Text("Claude Code deletes saved sessions older than this on its own (setting: cleanupPeriodDays). 30 days is the most Agent Deck offers.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         } header: { Text("History") }
 
         Section {
             Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
         } header: { Text("Prompts") } footer: {
             Text("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting; risky commands need a click. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
 
         Section {
@@ -179,7 +177,7 @@ struct SettingsView: View {
             Toggle("A usage limit passes 80% and 95%", isOn: $notifyLimits)
         } header: { Text("Notify me when") } footer: {
             Text("If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
@@ -189,7 +187,7 @@ struct SettingsView: View {
                 StorageBar(parts: [("Conversations", st.conversations, .blue), ("Scratchpads", st.scratchpads, .purple), ("Undo backups", st.undoBackups, .teal)])
                 HStack {
                     Text(st.orphans.isEmpty ? "No leftovers from deleted sessions"
-                         : "\(st.orphans.count) leftover\(st.orphans.count == 1 ? "" : "s") from deleted sessions · \(Fmt.bytes(st.orphanBytes))")
+                         : "\(Fmt.count(st.orphans.count, "leftover")) from deleted sessions · \(Fmt.bytes(st.orphanBytes))")
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Clean up leftovers") { Task { await model.cleanLeftovers() } }.disabled(st.orphans.isEmpty)
@@ -200,27 +198,26 @@ struct SettingsView: View {
             Toggle("Clean up leftovers automatically once a day", isOn: $autoCleanLeftovers)
         } header: { Text("Claude storage") } footer: {
             Text("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
 
         Section {
             DatePicker("Delete closed sessions last used before", selection: $cutoff, displayedComponents: .date)
             HStack {
-                Text("\(old.count) session\(old.count == 1 ? "" : "s") · \(Fmt.bytes(old.reduce(0) { $0 + $1.bytes }))").foregroundStyle(.secondary)
+                Text("\(Fmt.count(old.count, "session")) · \(Fmt.bytes(old.reduce(0) { $0 + $1.bytes }))").foregroundStyle(.secondary)
                     .contentTransition(.numericText(value: Double(old.count)))
                     .animation(Motion.fast(reduceMotion), value: old.count)
                 Spacer()
                 if confirmCleanup {
-                    Text("Move them to the Trash?")
-                    Button("Cancel") { confirmCleanup = false }
-                    Button("Delete", role: .destructive) { model.delete(old); confirmCleanup = false }
+                    ConfirmRow(message: "Move them to the Trash?", confirmTitle: "Delete", destructive: true,
+                               cancel: { confirmCleanup = false }) { model.delete(old); confirmCleanup = false }
                 } else {
                     Button("Clean up…", role: .destructive) { confirmCleanup = true }.disabled(old.isEmpty)
                 }
             }
         } header: { Text("Clean up now") } footer: {
             Text("This frees space on your Mac. Sessions listed on claude.ai or in the phone app are kept on Anthropic's servers and aren't affected.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
@@ -234,7 +231,7 @@ struct SettingsView: View {
             }
         } header: { Text("Health") } footer: {
             Text("Repair puts Agent Deck's hooks back without touching your own. Codex runs a new hook only after you approve it once: open Codex and type /hooks. A missing status line comes back by running install.sh again.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(.secondary)
         }
 
         Section {
@@ -270,7 +267,7 @@ struct StorageBar: View {
                     }
                 }
             }
-            .font(.system(size: 11))
+            .font(.subheadline)
         }
         .accessibilityElement(children: .combine)
     }

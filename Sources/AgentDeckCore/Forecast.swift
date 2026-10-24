@@ -73,6 +73,8 @@ public struct UsageHeatmap: Equatable, Sendable {
     public var weekdaySymbols: [String] = []
     public var peak: Double { cells.flatMap { $0 }.max() ?? 0 }
 
+    public init() {}
+
     /// A rise between readings further apart than this can't be placed in one hour.
     static let maxGap: TimeInterval = 2 * 3600
 

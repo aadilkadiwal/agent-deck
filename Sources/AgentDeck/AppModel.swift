@@ -53,6 +53,7 @@ final class AppModel {
     var detailsOpen = false
     var pinnedOpen = false
     @ObservationIgnored var showDetails: ((DetailsTab) -> Void)?
+    @ObservationIgnored var focusApproval: Int?
     private(set) var menuHotkeyFailed = false
 
     let paths = ClaudePaths()
@@ -117,7 +118,7 @@ final class AppModel {
         var parts: [String] = []
         if let w = usage?.fiveHour { parts.append("5-hour limit \(Int(w.percent().rounded()))%") }
         if let w = usage?.weekly { parts.append("weekly \(Int(w.percent().rounded()))%") }
-        parts.append("\(live.count) session\(live.count == 1 ? "" : "s") running")
+        parts.append("\(Fmt.count(live.count, "session")) running")
         let waiting = count(.blocked)
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
         return parts.joined(separator: " · ")
@@ -332,19 +333,19 @@ final class AppModel {
         }
         let (fileFailed, filesMoved) = Leftovers.moveToTrash(files)
         moved += filesMoved
-        let filesNote = files.isEmpty ? "" : " and \(files.count - fileFailed) file\(files.count - fileFailed == 1 ? "" : "s")"
+        let filesNote = files.isEmpty ? "" : " and \(Fmt.count(files.count - fileFailed, "file"))"
         banner = failed + fileFailed == 0
-            ? Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
+            ? Banner(text: "Moved \(Fmt.count(done, "session"))\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
                 self?.undoDelete(moved)
             }
-            : Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash; \(failed + fileFailed) couldn't be moved.", isError: true)
+            : Banner(text: "Moved \(Fmt.count(done, "session"))\(filesNote) to the Trash; \(failed + fileFailed) couldn't be moved.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
     }
 
     private func undoDelete(_ moved: [Leftovers.Moved]) {
         let failed = Leftovers.restore(moved)
         banner = failed == 0 ? Banner(text: "Restored from the Trash.")
-                             : Banner(text: "\(failed) item\(failed == 1 ? "" : "s") couldn't be restored. They're still in the Trash.", isError: true)
+                             : Banner(text: "\(Fmt.count(failed, "item")) couldn't be restored. They're still in the Trash.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
     }
 
@@ -370,8 +371,8 @@ final class AppModel {
         }.value
         let failed = Leftovers.moveToTrash(orphans).failed
         if !quiet || failed > 0 {
-            banner = failed == 0 ? Banner(text: "Moved \(orphans.count) leftover\(orphans.count == 1 ? "" : "s") (\(Fmt.bytes(bytes))) to the Trash.")
-                : Banner(text: "\(failed) leftover\(failed == 1 ? "" : "s") couldn't be moved to the Trash.", isError: true)
+            banner = failed == 0 ? Banner(text: "Moved \(Fmt.count(orphans.count, "leftover")) (\(Fmt.bytes(bytes))) to the Trash.")
+                : Banner(text: "\(Fmt.count(failed, "leftover")) couldn't be moved to the Trash.", isError: true)
         }
         if storage != nil { await refreshStorage() }
     }
@@ -630,6 +631,11 @@ enum Fmt {
         case .safeUntilReset: return "Safe until reset at this pace"
         case .unknown: return nil
         }
+    }
+
+    // Foundation's grammar agreement ("1 session", "3 sessions"), so plurals stay localizable.
+    static func count(_ n: Int, _ noun: String) -> String {
+        String(AttributedString(localized: "^[\(n) \(noun)](inflect: true)").characters)
     }
 
     static func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }

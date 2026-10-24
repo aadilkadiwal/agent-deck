@@ -22,6 +22,7 @@ struct AgentDeckApp: App {
         Settings {
             SettingsView(model: model)
         }
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -38,7 +39,7 @@ struct BarLabel: View {
         let pct = { (p: Double?) in p.map { "\(Int($0.rounded()))%" } ?? "–" }
         let style = BarStyle(rawValue: barStyle) ?? .closest
         let weeklyCloser = style != .ringOnly && (week ?? 0) > (five ?? 0)
-        let limit = weeklyCloser ? "W \(pct(week))" : pct(five)
+        let limit = weeklyCloser ? "Weekly \(pct(week))" : pct(five)
         let waiting = model.count(.blocked)
         HStack(spacing: 4) {
             Image(nsImage: MenuBarRing.image(percent: weeklyCloser ? week : five, weekly: weeklyCloser, alert: model.needsYou && !blinkOff))
