@@ -13,9 +13,10 @@ enum Motion {
     static func spring(reduced: Bool) -> Animation { reduced ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.78) }
 }
 
-/// A steady color per session, so a prompt card matches its row. Orange is left out: it means "needs you".
+/// A steady color per session, so a prompt card matches its row. No green or orange: they mean working / needs you.
 enum SessionColor {
-    private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan, .green, .brown]
+    private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan,
+                                           Color(red: 0.39, green: 0.45, blue: 0.55), Color(red: 0.61, green: 0.31, blue: 0.59)]
 
     static func of(_ sessionId: String) -> Color {
         // String.hashValue changes every launch; this doesn't.
@@ -27,8 +28,8 @@ struct Ring: View {
     let percent: Double
     var size: CGFloat = 44
     var line: CGFloat = 5
-    var tint: Color?
     var delay: Double = 0
+    var showsLabel = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shown: Double = 0
 
@@ -40,12 +41,14 @@ struct Ring: View {
             Circle().stroke(Color.secondary.opacity(0.2), lineWidth: line)
             Circle()
                 .trim(from: 0, to: shown / 100)
-                .stroke(tint ?? Level.color(shown), style: StrokeStyle(lineWidth: line, lineCap: .round))
+                .stroke(Level.color(shown), style: StrokeStyle(lineWidth: line, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text("\(Int(shown.rounded()))%")
-                .font(.system(size: size * 0.24, weight: .semibold))
-                .monospacedDigit()
-                .contentTransition(.numericText(value: shown))
+            if showsLabel {
+                Text("\(Int(shown.rounded()))%")
+                    .font(.system(size: size * 0.24, weight: .semibold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: shown))
+            }
         }
         .keyframeAnimator(initialValue: 1.0, trigger: level) { v, scale in
             v.scaleEffect(still ? 1 : scale)

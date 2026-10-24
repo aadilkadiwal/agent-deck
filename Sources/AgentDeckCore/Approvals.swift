@@ -21,9 +21,13 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
     public let description: String?
     public let alwaysLabel: String?
     public let questions: [Question]
+    /// From the whole command: `detail` is cut to 4000 characters.
+    public let risk: String?
     public let receivedAt = Date()
 
     private static let maxDetail = 4000
+
+    public static let shellTools: Set<String> = ["Bash", "shell", "exec_command", "local_shell"]
 
     public static func parse(_ data: Data, id: Int) -> ApprovalRequest? {
         guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -35,8 +39,11 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
         let questions = kind == .question ? parseQuestions(input["questions"]) : []
         if kind == .question && questions.isEmpty { return nil }
         let detail: String
+        var risk: String?
         switch kind {
-        case .permission: detail = summary(tool: tool, input: input)
+        case .permission:
+            detail = summary(tool: tool, input: input)
+            if shellTools.contains(tool) { risk = Risk.of(command: detail) }
         case .plan: detail = input["plan"] as? String ?? ""
         case .question: detail = ""
         }
@@ -46,7 +53,8 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
             detail: String(detail.prefix(maxDetail)),
             description: (input["description"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             alwaysLabel: kind == .permission ? alwaysLabel(p["permission_suggestions"]) : nil,
-            questions: questions
+            questions: questions,
+            risk: risk
         )
     }
 
@@ -55,6 +63,8 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
             ((text as? String) ?? "").split(separator: "\n", omittingEmptySubsequences: false).prefix(60).map { prefix + $0 }
         }
         if let cmd = input["command"] as? String { return cmd }
+        // Codex sends its command as an argument list.
+        if let args = input["command"] as? [String] { return args.joined(separator: " ") }
         if let path = (input["file_path"] ?? input["notebook_path"]) as? String {
             var out: [String] = []
             switch tool {
@@ -97,6 +107,33 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
             out.append(Question(question: text, multiSelect: q["multiSelect"] as? Bool ?? false, options: options))
         }
         return out
+    }
+}
+
+/// A heuristic: a command it doesn't flag isn't proven safe.
+public enum Risk {
+    // Matches only where a command starts, so `git rm -r` or "sudo" in a commit message don't count.
+    private static let start = #"(^|[;&|(\n]\s*|\b(sudo|xargs|then|do|exec)\s+)"#
+    private static let rmRecursive = start + #"(\S*/)?rm\s+(-{1,2}[a-zA-Z-]+\s+)*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b"#
+
+    private static let rules: [(pattern: String, reason: String)] = [
+        (rmRecursive + #"[^;&|]*\s(\.\.|/|~)"#, "deletes files outside the folder"),
+        (rmRecursive, "deletes folders"),
+        (#"\bgit\s+push\b[^;&|]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)"#, "force-pushes"),
+        (#"\bgit\s+reset\s+[^;&|]*--hard\b"#, "throws away local changes"),
+        (#"\bgit\s+clean\s+[^;&|]*-[a-zA-Z]*f"#, "deletes untracked files"),
+        (#"\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)"#, "throws away local changes"),
+        (#"\bgit\s+branch\s+[^;&|]*-D\b"#, "deletes a branch"),
+        (#"(^|[;&|(\n]\s*)sudo\s"#, "runs as administrator"),
+        (#"\b(curl|wget)\b[^;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b"#, "runs a downloaded script"),
+        (#"\b(mkfs|diskutil\s+(erase|partition)|dd\s+[^;&|]*of=/dev/)"#, "writes to a disk"),
+        (#"\bchmod\s+(-R\s+)?[0-7]*777\b"#, "makes files writable by everyone"),
+        (#"(?i)\b(drop\s+(table|database|schema)|truncate\s+table)\s+[\w"`\[]"#, "deletes database data"),
+        (#"\bfind\b[^;&|]*\s-delete\b"#, "deletes files"),
+    ]
+
+    public static func of(command: String) -> String? {
+        rules.first { command.range(of: $0.pattern, options: .regularExpression) != nil }?.reason
     }
 }
 

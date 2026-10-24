@@ -71,7 +71,7 @@ struct ContextBar: View {
     let reading: ContextReading
     var body: some View {
         let percent = reading.percent
-        let tint: Color = percent >= 90 ? .red : .secondary
+        let tint = Self.tint(percent)
         HStack(spacing: 4) {
             Capsule().fill(Color.primary.opacity(0.12)).frame(width: 36, height: 4)
                 .overlay(alignment: .leading) { Capsule().fill(tint).frame(width: 36 * CGFloat(percent) / 100, height: 4) }
@@ -81,6 +81,9 @@ struct ContextBar: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Context \(percent) percent used")
     }
+
+    static let warnAt = 70
+    static func tint(_ percent: Int) -> Color { percent >= 90 ? .red : percent >= warnAt ? .orange : .secondary }
 }
 
 struct IconButton: View {
@@ -185,4 +188,85 @@ func highlighted(_ text: String, _ query: String) -> AttributedString {
         from = r.upperBound
     }
     return out
+}
+
+struct ActivityLine: View {
+    let model: AppModel
+    let session: LiveSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func isShown(_ s: LiveSession, _ model: AppModel) -> Bool {
+        s.isLeftover || s.state != .idle || (model.activity[s.sessionId]?.subagents.isEmpty == false)
+    }
+
+    var body: some View {
+        let s = session
+        let a = model.activity[s.sessionId]
+        let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\($0) agent\($0 == 1 ? "" : "s")" : nil }
+        let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
+        let text = [doing ?? Self.stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
+        Group {
+            if let since = model.busySince[s.sessionId], s.state == .busy {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let t = max(0, Int(ctx.date.timeIntervalSince(since)))
+                    Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
+                        .contentTransition(.numericText(countsDown: false))
+                        .animation(Motion.fast(reduceMotion), value: t)
+                }
+            } else {
+                Text(text)
+            }
+        }
+        .font(.system(size: 11)).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
+    }
+
+    static func stateText(_ s: LiveSession) -> String {
+        if s.isLeftover { return "not running · old entry" }
+        switch s.state {
+        case .busy: return "working"
+        case .idle: return "idle"
+        case .blocked: return "waiting for you"
+        }
+    }
+}
+
+struct CompactUsage: View {
+    let model: AppModel
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        if let u = model.usage {
+            let closer = [u.fiveHour, u.weekly].compactMap { $0 }.max { $0.percent() < $1.percent() }
+            Button(action: action) {
+                HStack(spacing: 6) {
+                    parts(u).lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(Fmt.resets(closer?.resetsAt)).foregroundStyle(.secondary).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(hover ? .secondary : .tertiary)
+                }
+                .font(.system(size: 11)).monospacedDigit()
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(hover ? Color.primary.opacity(0.05) : .clear))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hover = $0 }
+            .help("Open usage details")
+            .accessibilityLabel(model.barSummary)
+        }
+    }
+
+    private func parts(_ u: UsageSnapshot) -> Text {
+        var items: [(String, Double)] = []
+        if let w = u.fiveHour { items.append(("5h", w.percent())) }
+        if let w = u.weekly { items.append(("Weekly", w.percent())) }
+        if let l = model.codexUsage.first { items.append(("Codex", l.percent)) }
+        return items.enumerated().reduce(Text("")) { out, e in
+            let (label, pct) = e.element
+            let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= 75 ? .semibold : .regular)
+                .foregroundColor(pct >= 75 ? Level.color(pct) : .primary)
+            return out + Text(e.offset == 0 ? "" : " · ").foregroundColor(.secondary) + Text("\(label) ").foregroundColor(.secondary) + value
+        }
+    }
 }

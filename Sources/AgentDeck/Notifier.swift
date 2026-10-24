@@ -29,6 +29,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().setNotificationCategories([
             UNNotificationCategory(identifier: "permission", actions: [allow, deny], intentIdentifiers: []),
             UNNotificationCategory(identifier: "permission-always", actions: [allow, always, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "permission-risky", actions: [deny], intentIdentifiers: []),
             UNNotificationCategory(identifier: "plan", actions: [UNNotificationAction(identifier: "allow", title: "Approve plan")], intentIdentifiers: []),
         ])
         UNUserNotificationCenter.current().delegate = self
@@ -80,9 +81,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let title: String, body: String, category: String?
         switch r.kind {
         case .permission:
-            title = "\(name) wants to use \(r.toolName)"
+            title = r.risk.map { "\(name) wants to run a risky command: it \($0)" } ?? "\(name) wants to use \(r.toolName)"
             body = r.detail.isEmpty ? (r.description ?? "") : r.detail
-            category = r.alwaysLabel == nil ? "permission" : "permission-always"
+            category = r.risk != nil ? "permission-risky" : r.alwaysLabel == nil ? "permission" : "permission-always"
         case .plan:
             (title, body, category) = ("\(name) has a plan for you", r.detail, "plan")
         case .question:

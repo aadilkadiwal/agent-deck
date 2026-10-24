@@ -16,16 +16,21 @@ struct MenuView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
     @State private var usageHover = false
+    @State private var hoveredRow: String?
+    @State private var actionsOpen = false
+    @State private var allClear = false
     @FocusState private var searchFocused: Bool
     @FocusState private var listFocused: Bool
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.openSettings) private var openSettings
 
     enum Confirm: Equatable {
-        case stop(LiveSession), openWithPhone(LiveSession), clearContext(LiveSession), delete(HistorySession)
+        case stop(LiveSession), openWithPhone(LiveSession), clearContext(LiveSession), compact(LiveSession), delete(HistorySession)
         case renameLive(LiveSession), renameClosed(HistorySession), stopIdle
         var sessionId: String {
             switch self {
             case .stopIdle: return "idle-sessions"
-            case .stop(let s), .openWithPhone(let s), .clearContext(let s), .renameLive(let s): return s.sessionId
+            case .stop(let s), .openWithPhone(let s), .clearContext(let s), .compact(let s), .renameLive(let s): return s.sessionId
             case .delete(let h), .renameClosed(let h): return h.sessionId
             }
         }
@@ -41,14 +46,14 @@ struct MenuView: View {
     private var waitingRows: [LiveSession] {
         guard only == nil || only == .blocked else { return [] }
         let carded = Set(model.approvals.map(\.sessionId))
-        return model.live.filter { $0.state == .blocked && !$0.isLeftover && !carded.contains($0.sessionId) && matches(model.displayName($0), $0.cwd, $0.sessionId) }
+        return model.live.filter { $0.state == .blocked && !$0.isLeftover && !carded.contains($0.sessionId) && matches(model.displayName($0), $0.cwd, $0.sessionId, model.lastPrompt($0.sessionId)) }
     }
     private var running: [LiveSession] {
         model.live.filter { s in
             let waiting = s.state == .blocked && !s.isLeftover
             guard !waiting else { return false }
             if let only { return s.state == only && !s.isLeftover }
-            return matches(model.displayName(s), s.cwd, s.sessionId)
+            return matches(model.displayName(s), s.cwd, s.sessionId, model.lastPrompt(s.sessionId))
         }
     }
     private var closed: [HistorySession] {
@@ -58,6 +63,12 @@ struct MenuView: View {
                          : Array(model.closed.prefix(5))
     }
     private var grouped: Bool { running.count > 5 && !searching && only == nil }
+    // Not narrowed by search, so typing never makes waiting sessions look answered.
+    private var urgent: Bool {
+        guard only == nil || only == .blocked else { return false }
+        return !model.approvals.isEmpty || model.live.contains { $0.state == .blocked && !$0.isLeftover }
+    }
+    private var typing: Bool { NSApp.keyWindow?.firstResponder is NSText }
 
     /// Everything ↑/↓ can reach, top to bottom, as it's drawn.
     private var items: [Item] {
@@ -74,19 +85,24 @@ struct MenuView: View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 0) {
                 healthBanner
-                if !model.live.isEmpty { statusStrip }
-                if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 6).transition(slide(from: .top)) }
-                usage
-                Divider().padding(.vertical, 6)
+                if urgent && !showingNew {
+                    needsYou.transition(.opacity.combined(with: .move(edge: .top)))
+                    CompactUsage(model: model) { showDetails(tab: .usage) }
+                    Divider().padding(.vertical, 6)
+                    header
+                    if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 6).transition(slide(from: .top)) }
+                } else {
+                    if allClear { allClearBanner.transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top))) }
+                    header
+                    if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 6).transition(slide(from: .top)) }
+                    usage
+                    Divider().padding(.vertical, 6)
+                }
                 ZStack(alignment: .top) {
                     if showingNew {
                         NewSessionPanel(model: model, isShown: $showingNew).transition(slide(from: .trailing))
                     } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            if !cards.isEmpty || !waitingRows.isEmpty { needsYou.transition(.opacity.combined(with: .move(edge: .top))) }
-                            sessions
-                        }
-                        .transition(slide(from: .leading))
+                        sessions.transition(slide(from: .leading))
                     }
                 }
                 .clipped()
@@ -94,22 +110,39 @@ struct MenuView: View {
                 Divider().padding(.vertical, 6)
                 footer
             }
-            .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.isEmpty)
+            .animation(Motion.spring(reduced: reduceMotion), value: urgent)
+            .animation(Motion.spring(reduced: reduceMotion), value: allClear)
             .animation(Motion.spring(reduced: reduceMotion), value: showingNew)
             .animation(Motion.spring(reduced: reduceMotion), value: only)
             .padding(8)
             .frame(width: 370)
+            .overlay(alignment: .top) {
+                if actionsOpen, let cursor {
+                    ZStack(alignment: .top) {
+                        Color.black.opacity(0.06).contentShape(Rectangle()).onTapGesture { closeActions() }
+                        ActionPanel(title: actionsTitle(cursor), actions: actions(for: cursor), close: closeActions)
+                            .padding(.horizontal, 24).padding(.top, 56)
+                    }
+                    .transition(.opacity)
+                }
+            }
             .focusable()
             .focused($listFocused)
             .focusEffectDisabled()
-            .onKeyPress(keys: [.upArrow, .downArrow]) { press in move(press.key == .downArrow ? 1 : -1, proxy); return .handled }
-            .onKeyPress(.return, phases: .down) { press in activate(command: press.modifiers.contains(.command)) }
-            .onKeyPress(characters: CharacterSet(charactersIn: "1234")) { press in answerOption(press.characters) }
-            .onKeyPress(characters: CharacterSet(charactersIn: "pkr")) { press in
-                press.modifiers.isEmpty ? rowKey(press.characters) : .ignored
+            .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                guard !actionsOpen else { return .ignored }
+                move(press.key == .downArrow ? 1 : -1, proxy); return .handled
             }
-            .onKeyPress(keys: [.delete]) { press in press.modifiers.contains(.command) ? rowKey("\u{7F}", command: true) : .ignored }
+            .onKeyPress(.return, phases: .down) { press in actionsOpen || typing ? .ignored : activate(command: press.modifiers.contains(.command)) }
+            .onKeyPress(characters: CharacterSet(charactersIn: "1234")) { press in actionsOpen || typing ? .ignored : answerOption(press.characters) }
+            .onKeyPress(characters: CharacterSet(charactersIn: "pkrc")) { press in
+                press.modifiers.isEmpty && !actionsOpen && !typing ? rowKey(press.characters) : .ignored
+            }
+            .onKeyPress(keys: [.delete]) { press in
+                press.modifiers.contains(.command) && !actionsOpen && !typing ? rowKey("\u{7F}", command: true) : .ignored
+            }
             .onKeyPress(.escape) {
+                if actionsOpen { withAnimation(Motion.fast(reduceMotion)) { actionsOpen = false }; return .handled }
                 if previewing != nil { withAnimation(Motion.snappy(reduceMotion)) { previewing = nil }; return .handled }
                 if only != nil { only = nil; return .handled }
                 if cursor != nil { cursor = nil; return .handled }
@@ -124,15 +157,28 @@ struct MenuView: View {
                     .keyboardShortcut("f").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 Button("") { Task { await model.refreshNow() } }
                     .keyboardShortcut("r").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { openActions() }
+                    .keyboardShortcut("k").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
+                    .keyboardShortcut(",").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             }
             .onAppear {
                 model.menuOpen = true
                 listFocused = true
+                if let first = model.pendingApprovals.last { cursor = .card(first.id) }
                 withAnimation(Motion.spring(reduced: reduceMotion)) { appeared = true }
             }
             .onDisappear {
                 model.menuOpen = false; search = ""; searchAsked = false; appeared = false
-                only = nil; previewing = nil; cursor = nil
+                only = nil; previewing = nil; cursor = nil; actionsOpen = false; allClear = false; hoveredRow = nil
+            }
+            .onChange(of: urgent) { was, now in
+                guard was, !now, model.menuOpen, only == nil, !showingNew, !searching else { return }
+                allClear = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_800_000_000)
+                    allClear = false
+                }
             }
         }
     }
@@ -153,6 +199,9 @@ struct MenuView: View {
         case .card(let id):
             guard let r = model.approvals.first(where: { $0.id == id }) else { return .ignored }
             if !command { model.openSession(id: r.sessionId) }
+            else if r.kind == .permission, let risk = r.risk {
+                model.banner = Banner(text: "This command \(risk), so ⌘⏎ doesn't allow it. Click Allow once if you mean it.", isError: true)
+            }
             else if r.kind == .permission { model.answer(id, .allow(always: false)) }
             else if r.kind == .plan { model.approvePlan(r, acceptEdits: false) }
             else { return .ignored }
@@ -204,14 +253,36 @@ struct MenuView: View {
         }
     }
 
-    private var statusStrip: some View {
+    private var header: some View {
         HStack(spacing: 6) {
-            chip(.blocked, "waiting", .orange)
+            if !urgent || only != nil { chip(.blocked, "waiting", .orange) }
             chip(.busy, "working", .green)
             chip(.idle, "idle", .secondary)
             Spacer()
+            IconButton(symbol: "magnifyingglass", on: searchAsked || searching, help: "Search sessions (⌘F)") {
+                showingNew = false
+                if searchAsked || searching {
+                    searchAsked = false; search = ""; listFocused = true
+                } else {
+                    searchAsked = true; searchFocused = true
+                }
+            }
+            IconButton(symbol: model.pinnedOpen ? "pin.fill" : "pin", on: model.pinnedOpen,
+                       help: model.pinnedOpen ? "Unpin: close the floating panel" : "Pin: keep a small panel on top while you work") {
+                PinnedPanel.shared.toggle(model)
+            }
         }
-        .padding(.horizontal, 4).padding(.bottom, 8)
+        .padding(.horizontal, 4).padding(.bottom, 6)
+    }
+
+    private var allClearBanner: some View {
+        Label("All clear: nothing needs you", systemImage: "checkmark.circle.fill")
+            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.green)
+            .frame(maxWidth: .infinity)
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.12)))
+            .padding(.bottom, 6)
+            .accessibilityAddTraits(.isStaticText)
     }
 
     @ViewBuilder private func chip(_ state: LiveSession.State, _ word: String, _ color: Color) -> some View {
@@ -252,6 +323,10 @@ struct MenuView: View {
                             .transition(cardTransition)
                     }
                     ForEach(waitingRows) { s in liveRow(s) }
+                    if cards.isEmpty && waitingRows.isEmpty {
+                        Text("No waiting session matches.").font(.system(size: 12)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
                 }
                 .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
             }
@@ -297,11 +372,15 @@ struct MenuView: View {
             HStack(spacing: 10) {
                 Text("Codex").fontWeight(.semibold)
                 ForEach(model.codexUsage) { l in
-                    Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
-                        .foregroundStyle(l.percent >= 75 ? Level.color(l.percent) : .secondary)
-                        .contentTransition(.numericText(value: l.percent))
-                        .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
-                        .help(Fmt.resets(l.resetsAt).capitalized)
+                    HStack(spacing: 4) {
+                        Ring(percent: l.percent, size: 12, line: 2.5, showsLabel: false)
+                        Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
+                            .foregroundStyle(l.percent >= 75 ? Level.color(l.percent) : .secondary)
+                            .contentTransition(.numericText(value: l.percent))
+                            .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
+                    }
+                    .help(Fmt.resets(l.resetsAt).capitalized)
+                    .accessibilityElement(children: .combine)
                 }
                 Spacer()
             }
@@ -318,7 +397,7 @@ struct MenuView: View {
         let running = self.running, closed = self.closed
         return VStack(alignment: .leading, spacing: 4) {
             if showSearch {
-                TextField("Search name, folder or session ID", text: $search)
+                TextField("Search name, folder, prompt or ID", text: $search)
                     .textFieldStyle(.roundedBorder)
                     .focused($searchFocused)
                     .controlSize(.regular)
@@ -356,7 +435,7 @@ struct MenuView: View {
                 .animation(Motion.spring(reduced: reduceMotion), value: confirm)
                 .animation(Motion.spring(reduced: reduceMotion), value: previewing)
             }
-            .frame(maxHeight: model.approvals.isEmpty ? 380 : 240)
+            .frame(maxHeight: urgent ? 240 : 380)
             .fixedSize(horizontal: false, vertical: true)
         }
         .animation(Motion.spring(reduced: reduceMotion), value: showSearch)
@@ -403,6 +482,8 @@ struct MenuView: View {
     @ViewBuilder private func liveRow(_ s: LiveSession) -> some View {
         let busy = model.working.contains(s.sessionId)
         let waiting = s.state == .blocked && !s.isLeftover
+        let showButtons = voiceOver || busy || hoveredRow == s.sessionId || cursor == .live(s.sessionId)
+            || confirm?.sessionId == s.sessionId
         VStack(spacing: 4) {
             HoverRow(selected: cursor == .live(s.sessionId)) {
                 Capsule().fill(waiting ? Color.orange : SessionColor.of(s.sessionId)).frame(width: waiting ? 4 : 3, height: 22)
@@ -410,30 +491,44 @@ struct MenuView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(highlighted(model.displayName(s), search)).font(.system(size: 13, weight: waiting ? .semibold : .medium)).lineLimit(1)
+                        if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(Color.accentColor).help("On your phone") }
                         if s.kind == .background { Pill(text: "BG").help("Background session: it runs without a terminal window") }
                         if s.agent != .claude { Pill(text: s.agent.label.uppercased(), color: s.agent == .codex ? .teal : .blue) }
                     }
                     Text(highlighted([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "), search))
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    activityLine(s)
+                    if ActivityLine.isShown(s, model) { ActivityLine(model: model, session: s) }
                 }
                 .accessibilityElement(children: .combine)
                 Spacer(minLength: 4)
                 if s.agent == .claude {
-                    HStack(spacing: 8) { rowButtons(s) }
-                        .opacity(busy ? 0.3 : 1)
-                        .disabled(busy)
-                        .overlay { if busy { ProgressView().controlSize(.small).transition(.opacity) } }
-                        .animation(Motion.fast(reduceMotion), value: busy)
+                    ZStack(alignment: .trailing) {
+                        if let c = model.context[s.sessionId] {
+                            ContextBar(reading: c).opacity(showButtons ? 0 : 1).accessibilityHidden(showButtons)
+                        }
+                        HStack(spacing: 2) { rowButtons(s) }
+                            .opacity(busy ? 0.3 : showButtons ? 1 : 0)
+                            .disabled(busy)
+                            .allowsHitTesting(showButtons)
+                            .accessibilityHidden(!showButtons)
+                            .overlay { if busy { ProgressView().controlSize(.small).transition(.opacity) } }
+                    }
+                    .animation(Motion.fast(reduceMotion), value: showButtons)
+                    .animation(Motion.fast(reduceMotion), value: busy)
                 } else if busy {
                     ProgressView().controlSize(.small)
                 }
             } action: { model.open(s) }
+            .onHover { inside in
+                if inside { hoveredRow = s.sessionId } else if hoveredRow == s.sessionId { hoveredRow = nil }
+            }
             .background { if waiting { RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(0.08)) } }
             .animation(Motion.snappy(reduceMotion), value: s.state)
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
                     .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
+                Button("Compact context…") { askCompact(s) }
+                    .disabled(s.agent != .claude || blocker(s, "compact") != nil)
                 Button("Clear context…") { askClear(s) }
                     .disabled(s.agent != .claude || s.kind == .background || s.state == .busy || model.typingBlockers[s.sessionId] != nil)
                 Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
@@ -455,12 +550,16 @@ struct MenuView: View {
         }
     }
 
+    private func askCompact(_ s: LiveSession) {
+        if let c = model.context[s.sessionId], c.percent >= ContextBar.warnAt { model.compact(s) } else { confirm = .compact(s) }
+    }
+
     private func askClear(_ s: LiveSession) {
         if let c = model.context[s.sessionId], c.percent < 10 { model.clearContext(s) } else { confirm = .clearContext(s) }
     }
 
-    private func clearBlocker(_ s: LiveSession) -> String? {
-        if s.kind == .background { return "It has no window to clear." }
+    private func blocker(_ s: LiveSession, _ verb: String) -> String? {
+        if s.kind == .background { return "It has no window to \(verb)." }
         return model.typingBlockers[s.sessionId] ?? (s.state == .busy ? "Available when it's idle. It's working on a reply." : nil)
     }
 
@@ -470,7 +569,8 @@ struct MenuView: View {
         let unavailable = { (why: String) in model.banner = Banner(text: why, isError: true) }
         switch key {
         case "p": if let why = model.typingBlockers[sid] { unavailable(why) } else { togglePhone(s) }
-        case "k": if let why = clearBlocker(s) { unavailable(why) } else { askClear(s) }
+        case "k": if let why = blocker(s, "clear") { unavailable(why) } else { askClear(s) }
+        case "c": if let why = blocker(s, "compact") { unavailable(why) } else { askCompact(s) }
         case "r":
             if s.kind == .background { unavailable("It has no window to rename it in.") }
             else if let why = model.typingBlockers[sid] { unavailable(why) } else { confirm = .renameLive(s) }
@@ -484,11 +584,20 @@ struct MenuView: View {
         IconButton(symbol: "iphone", on: s.isOnPhone, help: model.typingBlockers[s.sessionId] ?? phoneHelp(s),
                    dimmed: model.typingBlockers[s.sessionId] != nil) { togglePhone(s) }
         if s.kind == .interactive {
-            let why = clearBlocker(s)
-            IconButton(symbol: "eraser", help: why ?? "Clear context (/clear). The conversation stays in Recent.", dimmed: why != nil) {
-                askClear(s)
+            let why = blocker(s, "compact")
+            let high = (model.context[s.sessionId]?.percent ?? 0) >= ContextBar.warnAt
+            if high && why == nil {
+                Button("Compact") { model.compact(s) }
+                    .buttonStyle(.borderedProminent).controlSize(.mini)
+                    .tint(ContextBar.tint(model.context[s.sessionId]?.percent ?? 0))
+                    .help("Compact (/compact): Claude keeps a summary and frees context. Clear is in the right-click menu.")
+            } else {
+                IconButton(symbol: "arrow.down.right.and.arrow.up.left",
+                           help: why ?? "Compact (/compact): Claude keeps a summary and frees context. Clear is in the right-click menu.",
+                           dimmed: why != nil) { askCompact(s) }
             }
         }
+        Color.clear.frame(width: 6, height: 1)
         IconButton(symbol: s.isLeftover ? "xmark" : "stop.fill",
                    help: s.isLeftover ? "Clear this leftover entry (history is kept)" : "Stop session") {
             if s.state == .idle && !s.isLeftover { model.stop(s) } else { confirm = .stop(s) }
@@ -570,6 +679,12 @@ struct MenuView: View {
                 Spacer()
                 Button("Cancel") { confirm = nil }
                 Button("Stop all") { confirm = nil; idle.forEach(model.stop) }.keyboardShortcut(.defaultAction)
+            case .compact(let s):
+                Text("Compact its context? Claude keeps a summary and drops the details. The full conversation stays in its transcript.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Cancel") { confirm = nil }
+                Button("Compact") { confirm = nil; model.compact(s) }.keyboardShortcut(.defaultAction)
             case .clearContext(let s):
                 Text("Clear its context? It starts fresh in the same window. Undo brings this conversation back.")
                     .fixedSize(horizontal: false, vertical: true)
@@ -595,53 +710,111 @@ struct MenuView: View {
         .background(RoundedRectangle(cornerRadius: 7).fill(Color.accentColor.opacity(0.1)))
     }
 
-    @ViewBuilder private func activityLine(_ s: LiveSession) -> some View {
-        let a = model.activity[s.sessionId]
-        let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\($0) agent\($0 == 1 ? "" : "s")" : nil }
-        let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
-        let text = [doing ?? stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
-        HStack(spacing: 6) {
-            if let since = model.busySince[s.sessionId], s.state == .busy {
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    let t = max(0, Int(ctx.date.timeIntervalSince(since)))
-                    Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
-                        .contentTransition(.numericText(countsDown: false))
-                        .animation(Motion.fast(reduceMotion), value: t)
-                }
-            } else {
-                Text(text)
-            }
-            if let c = model.context[s.sessionId] { ContextBar(reading: c).layoutPriority(1) }
-        }
-        .font(.system(size: 11)).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
-    }
-
-    private func stateText(_ s: LiveSession) -> String {
-        if s.isLeftover { return "not running · old entry" }
-        switch s.state {
-        case .busy: return "working"
-        case .idle: return "idle"
-        case .blocked: return "waiting for you"
-        }
-    }
-
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            let onRow: Bool = { if case .live = cursor { return true }; return false }()
-            Text(onRow ? "⏎ open · P phone · K clear · R rename · ⌘⌫ stop" : "↑↓ move · ⏎ open · ⌘⏎ approve · 1–4 answer")
+            let onCard: Bool = { if case .card = cursor { return true }; return false }()
+            Text(onCard ? "↑↓ move · ⌘⏎ approve · 1–4 answer · ⌘K actions" : "↑↓ move · ⏎ open · ⌘K actions")
                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
-                .accessibilityLabel(onRow ? "Keyboard: Return opens, P phone, K clear context, R rename, Command Delete stops"
-                                          : "Keyboard: arrows move, Return opens, Command Return approves, 1 to 4 answers")
+                .accessibilityLabel(onCard ? "Keyboard: arrows move, Command Return approves, 1 to 4 answer, Command K shows all actions"
+                                           : "Keyboard: arrows move, Return opens, Command K shows all actions")
             HStack {
                 Button { showingNew.toggle() } label: { Label(showingNew ? "Back" : "New session…", systemImage: showingNew ? "chevron.left" : "plus") }
                     .keyboardShortcut("n")
                 Spacer()
                 Button("View details…") { showDetails(tab: .sessions) }
+                IconButton(symbol: "gearshape", help: "Settings (⌘,)") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
                 IconButton(symbol: "power", help: "Quit Agent Deck") { NSApp.terminate(nil) }
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 6)
+        }
+    }
+
+    private func openActions() {
+        guard !showingNew else { return }
+        let list = items
+        if cursor.map({ !list.contains($0) }) ?? true { cursor = list.first }
+        guard cursor != nil else { return }
+        withAnimation(Motion.fast(reduceMotion)) { actionsOpen = true }
+    }
+
+    private func closeActions() {
+        withAnimation(Motion.fast(reduceMotion)) { actionsOpen = false }
+        listFocused = true
+    }
+
+    private func actionsTitle(_ item: Item) -> String {
+        switch item {
+        case .card(let id): return model.approvals.first { $0.id == id }.map { model.sessionName($0.sessionId, cwd: $0.cwd) } ?? "this prompt"
+        case .live(let sid): return model.live.first { $0.sessionId == sid }.map(model.displayName) ?? "this session"
+        case .closed(let sid): return model.closed.first { $0.sessionId == sid }?.name ?? "this session"
+        }
+    }
+
+    private func actions(for item: Item) -> [DeckAction] {
+        switch item {
+        case .card(let id):
+            guard let r = model.approvals.first(where: { $0.id == id }), model.outcomes[id] == nil else { return [] }
+            var list: [DeckAction] = []
+            switch r.kind {
+            case .permission:
+                if let risk = r.risk {
+                    list.append(DeckAction(title: "Allow once", detail: "Risky: this command \(risk)") { model.answer(id, .allow(always: false)) })
+                } else {
+                    list.append(DeckAction(title: "Allow", key: "⌘⏎") { model.answer(id, .allow(always: false)) })
+                    if let rule = r.alwaysLabel {
+                        list.append(DeckAction(title: "Always allow", detail: "Saves \(rule)") { model.answer(id, .allow(always: true)) })
+                    }
+                }
+                list.append(DeckAction(title: "Deny", destructive: true) { model.answer(id, .deny) })
+            case .plan:
+                list.append(DeckAction(title: "Approve plan", key: "⌘⏎") { model.approvePlan(r, acceptEdits: false) })
+                list.append(DeckAction(title: "Approve, auto-accept edits") { model.approvePlan(r, acceptEdits: true) })
+            case .question:
+                break
+            }
+            list.append(DeckAction(title: "Show in the terminal", key: "⏎") { model.openSession(id: r.sessionId) })
+            return list
+        case .live(let sid):
+            guard let s = model.live.first(where: { $0.sessionId == sid }) else { return [] }
+            let open = DeckAction(title: s.kind == .interactive || s.agent != .claude ? "Show its window" : "Open in iTerm", key: "⏎") { model.open(s) }
+            guard s.agent == .claude else { return [open, DeckAction(title: "Copy session ID") { copy(s.sessionId) }] }
+            let working = model.working.contains(sid) ? "Busy with the last action. Try again in a moment." : nil
+            let typing = model.typingBlockers[sid]
+            var list = [open]
+            if !s.isLeftover {
+                list.append(DeckAction(title: "Compact context", key: "C", unavailable: working ?? blocker(s, "compact")) { askCompact(s) })
+                list.append(DeckAction(title: phoneTitle(s), key: "P", unavailable: working ?? typing) { togglePhone(s) })
+                list.append(DeckAction(title: "Rename…", key: "R",
+                                       unavailable: working ?? (s.kind == .background ? "It has no window to rename it in." : typing)) { confirm = .renameLive(s) })
+                list.append(DeckAction(title: "Clear context…", key: "K", unavailable: working ?? blocker(s, "clear")) { askClear(s) })
+            }
+            if let url = s.phoneURL { list.append(DeckAction(title: "Copy phone link") { copy(url.absoluteString) }) }
+            list.append(DeckAction(title: "Copy session ID") { copy(s.sessionId) })
+            list.append(DeckAction(title: s.isLeftover ? "Clear leftover entry…" : "Stop session…", key: "⌘⌫", destructive: true,
+                                   unavailable: working) { confirm = .stop(s) })
+            return list
+        case .closed(let sid):
+            guard let h = model.closed.first(where: { $0.sessionId == sid }) else { return [] }
+            return [
+                DeckAction(title: "Resume in iTerm", key: "⏎") { model.resumeInTerminal(h) },
+                DeckAction(title: previewing == sid ? "Hide preview" : "Preview") {
+                    withAnimation(Motion.snappy(reduceMotion)) { previewing = previewing == sid ? nil : sid }
+                },
+                DeckAction(title: "Rename…") { confirm = .renameClosed(h) },
+                DeckAction(title: "Copy session ID") { copy(h.sessionId) },
+                DeckAction(title: "Delete…", destructive: true) { confirm = .delete(h) },
+            ]
+        }
+    }
+
+    private func phoneTitle(_ s: LiveSession) -> String {
+        switch (s.isOnPhone, s.kind) {
+        case (false, .interactive): return "Also open on phone"
+        case (true, .interactive): return "Disconnect phone (keeps running)"
+        case (false, .background): return "Open in iTerm + phone"
+        case (true, .background): return "Stop it (it's only on your phone)…"
         }
     }
 
@@ -870,5 +1043,101 @@ struct DeleteConfirm: View {
     private func relative(_ url: URL) -> String {
         let root = sessions[0].cwd + "/"
         return url.path.hasPrefix(root) ? String(url.path.dropFirst(root.count)) : Fmt.shortPath(url.path)
+    }
+}
+
+struct DeckAction {
+    let title: String
+    var detail: String?
+    var key = ""
+    var destructive = false
+    var unavailable: String?
+    let run: () -> Void
+}
+
+struct ActionPanel: View {
+    let title: String
+    let actions: [DeckAction]
+    let close: () -> Void
+    @State private var query = ""
+    @State private var index = 0
+    @FocusState private var focused: Bool
+
+    private var shown: [DeckAction] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? actions : actions.filter { $0.title.lowercased().contains(q) }
+    }
+
+    var body: some View {
+        let list = shown
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Actions for \(title)…", text: $query)
+                .textFieldStyle(.plain).font(.system(size: 13))
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .focused($focused)
+                .onKeyPress(.downArrow) { index = min(index + 1, max(list.count - 1, 0)); return .handled }
+                .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
+                .onExitCommand(perform: close)
+                .onSubmit { run(list) }
+                .onChange(of: query) { index = 0 }
+            Divider()
+            if list.isEmpty {
+                Text(actions.isEmpty ? "Nothing to do here right now." : "No matching action.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(10)
+            } else {
+                ScrollView {
+                    VStack(spacing: 1) {
+                        ForEach(Array(list.enumerated()), id: \.offset) { i, a in
+                            row(a, selected: i == index)
+                                .contentShape(Rectangle())
+                                .onHover { if $0 { index = i } }
+                                .onTapGesture { index = i; run(list) }
+                        }
+                    }
+                    .padding(4)
+                }
+                .frame(maxHeight: 300)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.12)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.22), radius: 18, y: 8)
+        .onAppear { focused = true }
+        .accessibilityAddTraits(.isModal)
+    }
+
+    private func run(_ list: [DeckAction]) {
+        guard list.indices.contains(index) else { return }
+        let a = list[index]
+        guard a.unavailable == nil else { NSSound.beep(); return }
+        close()
+        a.run()
+    }
+
+    private func row(_ a: DeckAction, selected: Bool) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(a.title).font(.system(size: 12.5))
+                    .foregroundStyle(selected ? Color.white : a.destructive ? Color.red : Color.primary)
+                if let sub = a.unavailable ?? a.detail {
+                    Text(sub).font(.system(size: 10.5)).foregroundStyle(selected ? Color.white.opacity(0.8) : .secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 6)
+            if !a.key.isEmpty {
+                Text(a.key).font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(selected ? Color.white : .secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder((selected ? Color.white : Color.secondary).opacity(0.5)))
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(selected ? Color.accentColor : .clear))
+        .opacity(a.unavailable == nil ? 1 : 0.55)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(a.unavailable ?? "")
     }
 }

@@ -53,7 +53,7 @@ public enum Leftovers {
 
     private static func fileSize(_ url: URL) -> Int64 { Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
 
-    public static func createdFiles(_ s: HistorySession, _ p: ClaudePaths, isTracked: (URL) -> Bool = gitTracks) -> [CreatedFile] {
+    public static func createdFiles(_ s: HistorySession, _ p: ClaudePaths) -> [CreatedFile] {
         var transcripts = [s.fileURL]
         let e = FileManager.default.enumerator(at: s.fileURL.deletingPathExtension(), includingPropertiesForKeys: nil)
         while let f = e?.nextObject() as? URL { if f.pathExtension == "jsonl" { transcripts.append(f) } }
@@ -80,7 +80,7 @@ public enum Leftovers {
             let url = URL(fileURLWithPath: path)
             let mtime = a[.modificationDate] as? Date ?? .distantPast
             // A few seconds of slack: the write lands slightly before the transcript line is stamped.
-            let state: CreatedFile.State = isTracked(url) ? .inGit
+            let state: CreatedFile.State = gitTracks(url) ? .inGit
                 : mtime > (lastTouch[path] ?? .distantPast).addingTimeInterval(5) ? .changedSince : .untracked
             return CreatedFile(url: url, bytes: (a[.size] as? NSNumber)?.int64Value ?? 0, state: state)
         }
@@ -98,7 +98,8 @@ public enum Leftovers {
     }
 
     /// Skips anything touched in the last day: a new session has leftovers before its transcript.
-    public static func orphans(_ p: ClaudePaths, keep: Set<String>, now: Date = Date()) -> [URL] {
+    public static func orphans(_ p: ClaudePaths, keep: Set<String>) -> [URL] {
+        let now = Date()
         let fm = FileManager.default
         func list(_ dir: URL) -> [URL] {
             (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []

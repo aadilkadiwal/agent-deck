@@ -51,6 +51,9 @@ final class AppModel {
         }
     }
     var detailsOpen = false
+    var pinnedOpen = false
+    @ObservationIgnored var showDetails: ((DetailsTab) -> Void)?
+    private(set) var menuHotkeyFailed = false
 
     let paths = ClaudePaths()
     let cli: ClaudeCLI?
@@ -88,9 +91,11 @@ final class AppModel {
             try? SMAppService.mainApp.register()
         }
         notifier.onOpen = { [weak self] id in self?.openSession(id: id) }
-        notifier.onAnswer = { [weak self] id, answer in self?.answer(id, answer) }
+        notifier.onAnswer = { [weak self] id, answer in self?.answerFromNotification(id, answer) }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
+        hotkeys.onMenu = { StatusMenu.toggle() }
+        menuHotkeyFailed = !hotkeys.setMenuKey(MenuHotkey.current)
         UserDefaults.standard.register(defaults: [Self.approvalsKey: true])
         setApprovals(UserDefaults.standard.bool(forKey: Self.approvalsKey))
         watch(paths.sessionsDir)
@@ -126,6 +131,10 @@ final class AppModel {
 
     func forecast(_ w: LimitWindow) -> Forecast { Forecast.compute(w, samples: samples) }
 
+    func lastPrompt(_ sessionId: String) -> String {
+        history.first { $0.sessionId == sessionId }?.lastPrompt ?? ""
+    }
+
     var recentFolders: [String] {
         var seen = Set<String>()
         return (live.map(\.cwd) + history.map(\.cwd))
@@ -136,7 +145,7 @@ final class AppModel {
     /// Session files and usage every call. `claude agents` (which starts a process) every 5 s while
     /// a window is open, otherwise once a minute or when a session starts/stops. History once a minute.
     func refresh(history forceHistory: Bool = false, agents forceAgents: Bool = false) async {
-        let agentsEvery: TimeInterval = (menuOpen || detailsOpen) ? 5 : 60
+        let agentsEvery: TimeInterval = (menuOpen || detailsOpen || pinnedOpen) ? 5 : 60
         if let cli, forceAgents || Date().timeIntervalSince(lastAgentsFetch) >= agentsEvery {
             lastAgentsFetch = Date()
             lastAgents = await cli.listAgentsJSON()
@@ -265,6 +274,15 @@ final class AppModel {
             guard let self, let now = self.live.first(where: { $0.pid == s.pid && $0.pid != nil }) else { return }
             self.perform(now.sessionId, success: "Brought back \(name)'s conversation.") { try await $0.resumeHere(now, id: s.sessionId) }
         }) { try await $0.clear(s) }
+    }
+
+    func compact(_ s: LiveSession) {
+        perform(s.sessionId, success: "Compacting \(displayName(s)). Its context bar updates when it's done.") { try await $0.compact(s) }
+    }
+
+    func setMenuHotkey(_ key: MenuHotkey) {
+        UserDefaults.standard.set(key.rawValue, forKey: MenuHotkey.key)
+        menuHotkeyFailed = !hotkeys.setMenuKey(key)
     }
 
     func rename(_ s: LiveSession, to name: String) {
@@ -473,8 +491,23 @@ final class AppModel {
         updateApprovalUI()
     }
 
+    // A notification posted before its category changed can still carry an Allow button.
+    private func answerFromNotification(_ id: Int, _ a: ApprovalAnswer) {
+        if case .allow = a, approvals.first(where: { $0.id == id })?.risk != nil { openPrompt(id); return }
+        answer(id, a)
+    }
+
+    private func openPrompt(_ id: Int) {
+        if let r = approvals.first(where: { $0.id == id }) { openSession(id: r.sessionId) }
+    }
+
     private func answerWithHotkey(allow: Bool) {
         guard let r = pendingApprovals.first(where: { $0.kind == .permission }) else { return }
+        if allow, let risk = r.risk {
+            banner = Banner(text: "Not allowed by shortcut: this command \(risk). Click Allow once in the menu if you mean it.", isError: true)
+            NSSound.beep()
+            return
+        }
         answer(r.id, allow ? .allow(always: false) : .deny)
     }
 
@@ -563,14 +596,16 @@ enum Fmt {
         return p
     }
 
-    static func ago(_ d: Date, now: Date = Date()) -> String {
+    static func ago(_ d: Date) -> String {
+        let now = Date()
         if now.timeIntervalSince(d) < 60 { return "now" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: d, relativeTo: now)
     }
 
-    static func resets(_ d: Date?, now: Date = Date()) -> String {
+    static func resets(_ d: Date?) -> String {
+        let now = Date()
         guard let d else { return "" }
         if d <= now { return "reset" }
         let f = DateFormatter()

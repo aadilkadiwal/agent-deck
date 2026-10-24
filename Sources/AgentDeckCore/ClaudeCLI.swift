@@ -196,6 +196,15 @@ public struct ClaudeCLI: Sendable {
         }
     }
 
+    /// typeCommand already confirmed it was sent; the wait only keeps the spinner up while it starts.
+    @MainActor
+    public func compact(_ s: LiveSession) async throws {
+        let (pid, win) = try typingTarget(s, busyOK: false)
+        try typeCommand("/compact", into: win, session: s)
+        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
+        _ = await waitFor(timeout: 6) { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.state != .idle }
+    }
+
     @MainActor
     public func resumeHere(_ s: LiveSession, id: String) async throws {
         let (pid, win) = try typingTarget(s, busyOK: false)

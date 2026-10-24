@@ -5,48 +5,72 @@ import AgentDeckCore
 import SwiftUI
 
 enum DetailsTab: String, CaseIterable, Identifiable {
-    case sessions, waiting, usage, settings
+    case sessions, waiting, usage
     var id: String { rawValue }
+}
+
+enum SidebarItem: Hashable {
+    case tab(DetailsTab)
+    case project(String)
 }
 
 struct DetailsView: View {
     let model: AppModel
     @AppStorage("detailsTab") private var tab = DetailsTab.sessions.rawValue
+    @State private var project: String?
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     private var current: DetailsTab { DetailsTab(rawValue: tab) ?? .sessions }
     private var waitingCount: Int { model.live.filter { $0.state == .blocked && !$0.isLeftover }.count }
     private var hooksNeedRepair: Bool {
-        SettingsTab.hookKeys.contains { model.health?[$0.0] as? String == "missing" }
+        SettingsView.hookKeys.contains { model.health?[$0.0] as? String == "missing" }
+    }
+
+    private var selection: Binding<SidebarItem?> {
+        Binding(get: { project.map(SidebarItem.project) ?? .tab(current) },
+                set: { item in
+                    switch item {
+                    case .tab(let t): tab = t.rawValue; project = nil
+                    case .project(let p): tab = DetailsTab.sessions.rawValue; project = p
+                    case nil: break
+                    }
+                })
     }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: Binding(get: { current }, set: { if let t = $0 { tab = t.rawValue } })) {
-                sidebarRow(.sessions, "Sessions", "list.bullet", trailing: "\(model.live.count + model.closed.count)")
-                sidebarRow(.waiting, "Waiting", "hourglass", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
-                sidebarRow(.usage, "Usage", "chart.xyaxis.line")
-                sidebarRow(.settings, "Settings", "gearshape", warn: hooksNeedRepair)
+            List(selection: selection) {
+                sidebarRow(.tab(.sessions), "All sessions", "list.bullet", trailing: "\(model.live.count + model.closed.count)")
+                sidebarRow(.tab(.waiting), "Waiting", "hourglass", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
+                sidebarRow(.tab(.usage), "Usage", "chart.xyaxis.line")
+                let projects = Projects.list(model)
+                if !projects.isEmpty {
+                    Section("Projects") {
+                        ForEach(projects) { p in
+                            sidebarRow(.project(p.folder), Fmt.folderName(p.folder), "folder",
+                                       trailing: "\(p.count)", dot: p.waiting)
+                                .help(Fmt.shortPath(p.folder))
+                        }
+                    }
+                }
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 240)
+            .safeAreaInset(edge: .bottom) { sidebarFooter }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
         } detail: {
             VStack(spacing: 0) {
                 BannerView(model: model).padding([.horizontal, .top], 12)
                     .animation(Motion.spring(reduced: reduceMotion), value: model.banner?.id)
                 Group {
                     switch current {
-                    case .sessions: SessionsTab(model: model, search: $search, waitingOnly: false)
-                    case .waiting: SessionsTab(model: model, search: $search, waitingOnly: true)
-                    case .usage: UsageTab(model: model) { folder in
-                        search = folder
-                        tab = DetailsTab.sessions.rawValue
-                    }
-                    case .settings: SettingsTab(model: model)
+                    case .sessions: SessionsTab(model: model, search: $search, waitingOnly: false, project: project)
+                    case .waiting: SessionsTab(model: model, search: $search, waitingOnly: true, project: nil)
+                    case .usage: UsageTab(model: model) { folder in selection.wrappedValue = .project(folder) }
                     }
                 }
-                .id(current)
+                .id(project.map { "project:\($0)" } ?? current.rawValue)
                 .transition(.opacity)
             }
             .animation(Motion.fast(reduceMotion), value: current)
@@ -66,7 +90,7 @@ struct DetailsView: View {
             // No menu bar in a menu bar app, so the usual shortcuts live here.
             Group {
                 Button("") { if current != .waiting { tab = DetailsTab.sessions.rawValue }; searchFocused = true }.keyboardShortcut("f")
-                Button("") { tab = DetailsTab.settings.rawValue }.keyboardShortcut(",")
+                Button("") { openSettings(); NSApp.activate(ignoringOtherApps: true) }.keyboardShortcut(",")
             }
             .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
@@ -77,31 +101,77 @@ struct DetailsView: View {
             Task { await model.checkHealth() }
         }
         .onDisappear { model.detailsOpen = false }
+        .onChange(of: Projects.list(model).map(\.folder)) { _, folders in
+            if let p = project, !folders.contains(p) { project = nil }
+        }
     }
 
     private var title: String {
+        if let project { return Fmt.folderName(project) }
         switch current {
-        case .sessions: "Sessions"
-        case .waiting: "Waiting for you"
-        case .usage: "Usage"
-        case .settings: "Settings"
+        case .sessions: return "Sessions"
+        case .waiting: return "Waiting for you"
+        case .usage: return "Usage"
         }
     }
 
-    private func sidebarRow(_ t: DetailsTab, _ name: String, _ symbol: String,
-                            trailing: String? = nil, dot: Bool = false, warn: Bool = false) -> some View {
-        HStack {
-            Label(name, systemImage: symbol)
-            Spacer()
-            if dot { Circle().fill(Color.orange).frame(width: 7, height: 7) }
-            if let trailing { Text(trailing).monospacedDigit().foregroundStyle(.secondary) }
-            if warn {
-                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-                    .help("A hook needs repair")
-                    .accessibilityLabel("A hook needs repair")
+    @ViewBuilder private var sidebarFooter: some View {
+        if hooksNeedRepair {
+            Button {
+                UserDefaults.standard.set(SettingsPage.health.rawValue, forKey: SettingsPage.key)
+                openSettings()
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Label("Hooks need repair", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12)).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .help("Open Settings → Health")
         }
-        .tag(t)
+    }
+
+    private func sidebarRow(_ item: SidebarItem, _ name: String, _ symbol: String,
+                            trailing: String? = nil, dot: Bool = false) -> some View {
+        HStack {
+            Label(name, systemImage: symbol).lineLimit(1)
+            Spacer()
+            if dot { Circle().fill(Color.orange).frame(width: 7, height: 7).accessibilityLabel("Waiting for you") }
+            if let trailing { Text(trailing).monospacedDigit().foregroundStyle(.secondary) }
+        }
+        .tag(item)
+    }
+}
+
+enum Projects {
+    struct Entry: Identifiable, Equatable {
+        let folder: String
+        var count = 0
+        var running = false
+        var waiting = false
+        var lastActive = Date.distantPast
+        var id: String { folder }
+    }
+
+    @MainActor
+    static func list(_ model: AppModel) -> [Entry] {
+        var by: [String: Entry] = [:]
+        for s in model.live where !s.cwd.isEmpty {
+            var e = by[s.cwd] ?? Entry(folder: s.cwd)
+            e.count += 1
+            e.running = true
+            e.waiting = e.waiting || (s.state == .blocked && !s.isLeftover)
+            e.lastActive = max(e.lastActive, s.startedAt)
+            by[s.cwd] = e
+        }
+        for h in model.closed where !h.cwd.isEmpty {
+            var e = by[h.cwd] ?? Entry(folder: h.cwd)
+            e.count += 1
+            e.lastActive = max(e.lastActive, h.lastActive)
+            by[h.cwd] = e
+        }
+        return by.values.sorted { ($0.running ? 1 : 0, $0.lastActive, $0.folder) > ($1.running ? 1 : 0, $1.lastActive, $1.folder) }
     }
 }
 
@@ -111,6 +181,7 @@ struct SessionRow: Identifiable {
     let live: LiveSession?
     let saved: HistorySession?
     var liveName: String?
+    var liveBranch: String?
 
     var name: String { liveName ?? saved?.name ?? id }
     var folder: String { live?.cwd ?? saved?.cwd ?? "" }
@@ -118,6 +189,11 @@ struct SessionRow: Identifiable {
     var lastActive: Date { saved?.lastActive ?? live?.startedAt ?? .distantPast }
     var bytes: Int64 { saved?.bytes ?? 0 }
     var model: String { Fmt.model(saved?.model) }
+    var branch: String { liveBranch ?? saved?.branch ?? "" }
+    var duration: TimeInterval? { saved?.duration }
+    var durationSort: Double { duration ?? -1 }
+    var lastPrompt: String? { saved?.lastPrompt.flatMap { $0.isEmpty ? nil : $0 } }
+    var promptLine: String? { lastPrompt.flatMap { $0.hasPrefix(name) ? nil : $0 } }
     var isClosed: Bool { live == nil }
     var status: String {
         guard let s = live else { return "Closed" }
@@ -160,19 +236,21 @@ struct SessionsTab: View {
     let model: AppModel
     @Binding var search: String
     let waitingOnly: Bool
+    let project: String?
     @State private var filter = SessionFilter.all
     @State private var range = ActiveRange.any
     @State private var selection = Set<String>()
-    @State private var checked = Set<String>()
     @State private var pendingDelete: [HistorySession]?
     @State private var renaming: SessionRow?
     @State private var sortOrder = [KeyPathComparator(\SessionRow.lastActive, order: .reverse)]
     @State private var sparkle = false
+    @SceneStorage("sessionColumns") private var columns = TableColumnCustomization<SessionRow>()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var allRows: [SessionRow] {
         let saved = Dictionary(model.history.map { ($0.sessionId, $0) }, uniquingKeysWith: { a, _ in a })
-        let live = model.live.map { SessionRow(id: $0.sessionId, live: $0, saved: saved[$0.sessionId], liveName: model.displayName($0)) }
+        let live = model.live.map { SessionRow(id: $0.sessionId, live: $0, saved: saved[$0.sessionId], liveName: model.displayName($0),
+                                               liveBranch: model.branches[$0.cwd]) }
         let closed = model.closed.map { SessionRow(id: $0.sessionId, live: nil, saved: $0) }
         return live + closed
     }
@@ -180,27 +258,15 @@ struct SessionsTab: View {
     private var rows: [SessionRow] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return allRows
+            .filter { project == nil || $0.folder == project }
             .filter { waitingOnly ? $0.live?.state == .blocked && $0.live?.isLeftover == false : filter.matches($0) && range.matches($0.lastActive) }
-            .filter { q.isEmpty || $0.name.lowercased().contains(q) || $0.folder.lowercased().contains(q) || $0.id.hasPrefix(q) }
+            .filter { q.isEmpty || [$0.name, $0.folder, $0.id, $0.lastPrompt ?? ""].contains { $0.lowercased().contains(q) } }
             .sorted(using: sortOrder)
     }
 
     private var visibleClosed: [HistorySession] { rows.filter(\.isClosed).compactMap(\.saved) }
-    private var checkedSessions: [HistorySession] { model.closed.filter { checked.contains($0.sessionId) } }
+    private var selectedClosed: [HistorySession] { model.closed.filter { selection.contains($0.sessionId) } }
     private var selectedRow: SessionRow? { selection.count == 1 ? allRows.first { selection.contains($0.id) } : nil }
-
-    private var allVisibleChecked: Binding<Bool> {
-        Binding(
-            get: { !visibleClosed.isEmpty && visibleClosed.allSatisfy { checked.contains($0.sessionId) } },
-            set: { on in
-                let ids = Set(visibleClosed.map(\.sessionId))
-                if on { checked.formUnion(ids) } else { checked.subtract(ids) }
-            })
-    }
-
-    private func isChecked(_ id: String) -> Binding<Bool> {
-        Binding(get: { checked.contains(id) }, set: { if $0 { checked.insert(id) } else { checked.remove(id) } })
-    }
 
     var body: some View {
         let rows = self.rows
@@ -213,7 +279,7 @@ struct SessionsTab: View {
         }
         .padding(12)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if pendingDelete != nil || renaming != nil || !checkedSessions.isEmpty {
+            if pendingDelete != nil || renaming != nil || selection.count > 1 {
                 bottomBar
                     .font(.system(size: 12))
                     .padding(10)
@@ -222,18 +288,17 @@ struct SessionsTab: View {
                     .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(Motion.spring(reduced: reduceMotion), value: checked)
+        .animation(Motion.spring(reduced: reduceMotion), value: selection.count > 1)
         .animation(Motion.spring(reduced: reduceMotion), value: pendingDelete?.map(\.sessionId))
         .animation(Motion.spring(reduced: reduceMotion), value: renaming?.id)
         .inspector(isPresented: Binding(get: { selectedRow != nil }, set: { if !$0 { selection = [] } })) {
             if let r = selectedRow {
-                Inspector(row: r) { actions(for: r) }
-                    .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+                Inspector(row: r, primary: primary(for: r)) { actions(for: r, includeOpen: false) }
+                    .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
             }
         }
         .animation(Motion.spring(reduced: reduceMotion), value: selectedRow?.id)
-        // Forget ticks for sessions that no longer exist (deleted here or by Claude Code's cleanup).
-        .onChange(of: model.history.count) { checked.formIntersection(Set(model.closed.map(\.sessionId))) }
+        .onChange(of: model.history.count) { selection.formIntersection(Set(allRows.map(\.id))) }
     }
 
     private var cards: some View {
@@ -251,16 +316,18 @@ struct SessionsTab: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let scoped = allRows.filter { project == nil || $0.folder == project }
+        return VStack(alignment: .leading, spacing: 10) {
             Picker("", selection: $filter) {
-                ForEach(SessionFilter.allCases) { f in Text("\(f.rawValue) \(allRows.filter(f.matches).count)").tag(f) }
+                ForEach(SessionFilter.allCases) { f in Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f) }
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
             HStack(spacing: 14) {
-                Toggle("Select all closed (\(visibleClosed.count))", isOn: allVisibleChecked)
-                    .toggleStyle(.checkbox)
+                Button("Select all closed (\(visibleClosed.count))") { selection = Set(visibleClosed.map(\.sessionId)) }
+                    .controlSize(.small)
                     .disabled(visibleClosed.isEmpty)
-                let empty = model.emptySessions
+                    .help("Selects every closed session in the list. ⌘-click or ⇧-click to adjust, ⌫ to delete.")
+                let empty = model.emptySessions.filter { project == nil || $0.cwd == project }
                 if !empty.isEmpty {
                     Button { pendingDelete = empty } label: {
                         Label {
@@ -286,28 +353,51 @@ struct SessionsTab: View {
     private func table(_ rows: [SessionRow]) -> some View {
         // Running sessions stay on top whatever the column sort.
         let running = rows.filter { $0.live != nil }, closed = rows.filter(\.isClosed)
-        return Table(of: SessionRow.self, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("") { r in
-                if r.isClosed {
-                    Toggle("", isOn: isChecked(r.id)).toggleStyle(.checkbox).labelsHidden()
-                }
-            }.width(22)
+        return Table(of: SessionRow.self, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columns) {
             TableColumn("Status") { r in StatusPill(row: r) }.width(min: 76, ideal: 84)
+                .customizationID("status")
             TableColumn("Name", value: \.name) { r in
-                HStack(spacing: 4) {
-                    Text(highlighted(r.name, search)).lineLimit(1).help(r.saved?.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
-                    if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
-                    if r.live?.kind == .background { Pill(text: "BG").help("Background session: it runs without a terminal window") }
-                    if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased(), color: a == .codex ? .teal : .blue) }
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(highlighted(r.name, search)).lineLimit(1)
+                        if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
+                        if r.live?.kind == .background { Pill(text: "BG").help("Background session: it runs without a terminal window") }
+                        if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased(), color: a == .codex ? .teal : .blue) }
+                    }
+                    if let p = r.promptLine {
+                        Text(highlighted("“\(p)”", search)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
-            }.width(min: 150, ideal: 200)
+                .help(r.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
+            }
+            .width(min: 180, ideal: 280)
+            .customizationID("name")
+            .disabledCustomizationBehavior(.visibility)
             TableColumn("Folder", value: \.folder) { r in Text(highlighted(Fmt.shortPath(r.folder), search)).lineLimit(1).help(r.folder) }
-                .width(min: 110, ideal: 160)
+                .width(min: 110, ideal: 150)
+                .customizationID("folder")
+            TableColumn("Branch", value: \.branch) { r in
+                Text(r.branch.isEmpty ? "—" : r.branch).lineLimit(1).truncationMode(.middle).foregroundStyle(r.branch.isEmpty ? .tertiary : .primary)
+            }
+            .width(min: 70, ideal: 110)
+            .customizationID("branch")
+            TableColumn("Duration", value: \.durationSort) { r in
+                Text(r.duration.map(Fmt.duration) ?? "—").monospacedDigit().foregroundStyle(r.duration == nil ? .tertiary : .primary)
+                    .help("From the first message to the last")
+            }
+            .width(min: 60, ideal: 76)
+            .customizationID("duration")
             TableColumn("Session ID") { r in Text(r.shortId).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary) }
                 .width(80)
+                .customizationID("sessionId")
+                .defaultVisibility(.hidden)
             TableColumn("Model") { r in Text(r.model) }.width(min: 70, ideal: 80)
+                .customizationID("model")
+                .defaultVisibility(.hidden)
             TableColumn("Last active", value: \.lastActive) { r in Text(Fmt.ago(r.lastActive)) }.width(min: 80, ideal: 90)
+                .customizationID("lastActive")
             TableColumn("Size", value: \.bytes) { r in Text(Fmt.bytes(r.bytes)).monospacedDigit() }.width(64)
+                .customizationID("size")
             TableColumn("") { r in
                 if r.isClosed, let h = r.saved {
                     Button { pendingDelete = [h] } label: { Image(systemName: "trash") }
@@ -315,7 +405,10 @@ struct SessionsTab: View {
                         .foregroundStyle(.secondary)
                         .help("Delete this session")
                 }
-            }.width(28)
+            }
+            .width(28)
+            .customizationID("delete")
+            .disabledCustomizationBehavior(.all)
         } rows: {
             if !running.isEmpty {
                 Section("Running · \(running.count)") { ForEach(running) { TableRow($0) } }
@@ -325,19 +418,18 @@ struct SessionsTab: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            if let r = allRows.first(where: { ids.first == $0.id }) { actions(for: r) }
+            if ids.count > 1 {
+                let picked = model.closed.filter { ids.contains($0.sessionId) }
+                Button("Delete \(picked.count) closed session\(picked.count == 1 ? "" : "s")…", role: .destructive) { pendingDelete = picked }
+                    .disabled(picked.isEmpty)
+            } else if let r = allRows.first(where: { ids.first == $0.id }) {
+                actions(for: r, includeOpen: true)
+            }
         } primaryAction: { ids in
-            if let r = allRows.first(where: { ids.first == $0.id }) { open(r) }
+            if ids.count == 1, let r = allRows.first(where: { ids.first == $0.id }) { open(r) }
         }
         .onDeleteCommand {
-            let picked = checkedSessions.isEmpty ? model.closed.filter { selection.contains($0.sessionId) } : checkedSessions
-            if !picked.isEmpty { pendingDelete = picked }
-        }
-        .onKeyPress(.space) {
-            let ids = selection.filter { id in model.closed.contains { $0.sessionId == id } }
-            guard !ids.isEmpty else { return .ignored }
-            if ids.isSubset(of: checked) { checked.subtract(ids) } else { checked.formUnion(ids) }
-            return .handled
+            if !selectedClosed.isEmpty { pendingDelete = selectedClosed }
         }
     }
 
@@ -371,24 +463,40 @@ struct SessionsTab: View {
                 }
                 .controlSize(.small)
             } else {
-                let picked = checkedSessions
-                Text("\(picked.count) checked · \(Fmt.bytes(picked.reduce(0) { $0 + $1.bytes }))")
-                    .contentTransition(.numericText(value: Double(picked.count)))
+                let picked = selectedClosed
+                let runningCount = selection.count - picked.count
+                Text("\(selection.count) selected · \(Fmt.bytes(picked.reduce(0) { $0 + $1.bytes }))")
+                    .contentTransition(.numericText(value: Double(selection.count)))
+                if runningCount > 0 {
+                    Text("· \(runningCount) running, kept").foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Clear") { checked.removeAll() }
-                Button("Delete…", role: .destructive) { pendingDelete = picked }
-                    .help("Moves the files to the Trash. Running sessions can't be ticked.")
+                Button("Clear selection") { selection.removeAll() }
+                Button(runningCount > 0 ? "Delete \(picked.count) closed…" : "Delete…", role: .destructive) { pendingDelete = picked }
+                    .disabled(picked.isEmpty)
+                    .help("Moves the files to the Trash. Running sessions are never deleted. ⌫ in the table does the same.")
             }
         }
     }
 
-    @ViewBuilder private func actions(for r: SessionRow) -> some View {
+    private func primary(for r: SessionRow) -> Inspector<EmptyView>.Primary {
+        if let s = r.live {
+            return .init(title: s.kind == .interactive || s.agent != .claude ? "Show its window" : "Open in iTerm", symbol: "macwindow") { model.open(s) }
+        }
+        return .init(title: "Resume in iTerm", symbol: "terminal") { open(r) }
+    }
+
+    @ViewBuilder private func actions(for r: SessionRow, includeOpen: Bool) -> some View {
         Button("Rename…") { renaming = r }
             .disabled(r.live.map { $0.agent != .claude || $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
         if let s = r.live, s.agent != .claude {
-            Button("Show its window") { model.open(s) }
+            if includeOpen { Button("Show its window") { model.open(s) } }
         } else if let s = r.live {
-            Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
+            if includeOpen { Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) } }
+            if s.kind == .interactive {
+                Button("Compact context") { model.compact(s) }
+                    .disabled(s.state != .idle || model.typingBlockers[s.sessionId] != nil)
+            }
             if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keep running)") { model.phoneOff(s) } }
             if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in iTerm + phone") { model.phoneOn(s) } }
             if let url = s.phoneURL {
@@ -397,7 +505,7 @@ struct SessionsTab: View {
             }
             Button(s.isLeftover ? "Clear leftover entry" : "Stop") { model.stop(s) }
         } else if let h = r.saved {
-            Button("Resume in iTerm") { model.resumeInTerminal(h) }
+            if includeOpen { Button("Resume in iTerm") { model.resumeInTerminal(h) } }
             Button("Delete…", role: .destructive) { pendingDelete = [h] }
             Button("Show file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([h.fileURL]) }
         }
@@ -415,55 +523,106 @@ func copy(_ s: String) {
 }
 
 struct Inspector<Actions: View>: View {
+    struct Primary {
+        let title: String
+        let symbol: String
+        let run: () -> Void
+    }
+
     let row: SessionRow
+    let primary: Inspector<EmptyView>.Primary
     @ViewBuilder let actions: Actions
+    @AppStorage("inspectorPage") private var page = "info"
     @State private var detail: SessionDetail?
+    @State private var conversation: Conversation?
+    @State private var conversationFor: String?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.name).font(.system(size: 15, weight: .semibold)).lineLimit(2).textSelection(.enabled)
-                    HStack(spacing: 6) {
-                        StatusPill(row: row)
-                        if let s = row.live {
-                            Text("\(s.kind == .background ? "Background" : "Terminal") · since \(Fmt.ago(s.startedAt))\(s.isOnPhone ? " · on your phone" : "")")
-                                .foregroundStyle(.secondary)
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    Picker("", selection: $page) {
+                        Text("Info").tag("info")
+                        Text("Conversation").tag("conversation")
                     }
-                }
-                if let d = detail {
-                    field("Activity", [d.prompts > 0 ? "\(d.prompts) prompt\(d.prompts == 1 ? "" : "s")" : "no prompts",
-                                       d.duration.map { "ran \(Fmt.duration($0))" },
-                                       d.tokens > 0 ? "\(Fmt.tokens(d.tokens)) tokens" : nil].compactMap { $0 }.joined(separator: " · "))
-                }
-                if let p = row.saved?.lastPrompt { field("Last prompt", p, lines: 3) }
-                if let reply = detail?.lastReply { field("Last reply", reply, lines: 4) }
-                field("Folder", row.folder)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Session ID").foregroundStyle(.secondary)
-                    HStack {
-                        Text(row.id).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                        Button { copy(row.id) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+                    .pickerStyle(.segmented).labelsHidden()
+                    .disabled(row.saved == nil)
+                    if page == "conversation", row.saved != nil {
+                        ConversationView(conversation: conversation, folder: row.folder)
+                    } else {
+                        info
                     }
+                    Color.clear.frame(height: 1).id("end")
                 }
-                if let url = row.live?.phoneURL, let qr = QRCode.image(url.absoluteString) {
-                    HStack(spacing: 10) {
-                        Image(nsImage: qr).interpolation(.none).resizable().frame(width: 84, height: 84)
-                        Text("Scan to open on your phone").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 6) { actions }
-                    .buttonStyle(.bordered).controlSize(.small)
+                .font(.system(size: 12))
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.system(size: 12))
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .task(id: row.id) {
+                detail = nil
+                guard let url = row.saved?.fileURL else { return }
+                detail = await Task.detached { SessionDetail.load(url) }.value
+            }
+            // Keyed on size too, so a running session's conversation reloads as its transcript grows.
+            .task(id: "\(row.id)-\(row.bytes)-\(page)") {
+                guard page == "conversation", let url = row.saved?.fileURL else { return }
+                let id = row.id
+                if conversationFor != id { conversation = nil }
+                let c = await Task.detached { Conversation.load(url) }.value
+                guard !Task.isCancelled else { return }
+                let first = conversationFor != id
+                conversation = c
+                conversationFor = id
+                if first { proxy.scrollTo("end", anchor: .bottom) }
+            }
         }
-        .task(id: row.id) {
-            detail = nil
-            guard let url = row.saved?.fileURL else { return }
-            detail = await Task.detached { SessionDetail.load(url) }.value
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(row.name).font(.system(size: 15, weight: .semibold)).lineLimit(2).textSelection(.enabled)
+            HStack(spacing: 6) {
+                StatusPill(row: row)
+                if let s = row.live {
+                    Text("\(s.kind == .background ? "Background" : "Terminal") · since \(Fmt.ago(s.startedAt))\(s.isOnPhone ? " · on your phone" : "")")
+                        .foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            HStack(spacing: 6) {
+                Button(action: primary.run) { Label(primary.title, systemImage: primary.symbol) }
+                    .buttonStyle(.borderedProminent)
+                Menu { actions } label: { Image(systemName: "ellipsis") }
+                    .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize()
+                    .help("More actions")
+                    .accessibilityLabel("More actions")
+            }
+            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder private var info: some View {
+        if let d = detail {
+            field("Activity", [d.prompts > 0 ? "\(d.prompts) prompt\(d.prompts == 1 ? "" : "s")" : "no prompts",
+                               d.duration.map { "ran \(Fmt.duration($0))" },
+                               d.tokens > 0 ? "\(Fmt.tokens(d.tokens)) tokens" : nil].compactMap { $0 }.joined(separator: " · "))
+        }
+        if let p = row.lastPrompt { field("Last prompt", p, lines: 3) }
+        if let reply = detail?.lastReply { field("Last reply", reply, lines: 4) }
+        field("Folder", row.folder)
+        if !row.branch.isEmpty { field("Branch", row.branch) }
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Session ID").foregroundStyle(.secondary)
+            HStack {
+                Text(row.id).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                Button { copy(row.id) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+            }
+        }
+        if let url = row.live?.phoneURL, let qr = QRCode.image(url.absoluteString) {
+            HStack(spacing: 10) {
+                Image(nsImage: qr).interpolation(.none).resizable().frame(width: 84, height: 84)
+                Text("Scan to open on your phone").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -472,6 +631,85 @@ struct Inspector<Actions: View>: View {
             Text(label).foregroundStyle(.secondary)
             Text(value).lineLimit(lines).textSelection(.enabled)
         }
+    }
+}
+
+struct ConversationView: View {
+    let conversation: Conversation?
+    let folder: String
+
+    var body: some View {
+        if let c = conversation {
+            if c.entries.isEmpty {
+                Text("No messages in this session yet.").foregroundStyle(.secondary)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    if c.dropped > 0 {
+                        Text("\(c.dropped) earlier entr\(c.dropped == 1 ? "y" : "ies") not shown").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    }
+                    ForEach(c.entries) { entry($0) }
+                }
+                if !c.files.isEmpty { files(c.files) }
+            }
+        } else {
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Reading the transcript…").foregroundStyle(.secondary) }
+        }
+    }
+
+    @ViewBuilder private func entry(_ e: Conversation.Entry) -> some View {
+        switch e.kind {
+        case .prompt, .reply:
+            Text(e.text)
+                .lineLimit(14)
+                .textSelection(.enabled)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(e.kind == .prompt ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.06)))
+                .help(e.at.map { Fmt.clock($0) } ?? "")
+                .accessibilityLabel("\(e.kind == .prompt ? "You" : "Claude"): \(e.text)")
+        case .tool:
+            Label { Text(e.text).lineLimit(1).truncationMode(.middle) } icon: { Image(systemName: "chevron.right") }
+                .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                .labelStyle(TightLabel())
+                .padding(.leading, 4)
+                .help(e.text)
+        case .command:
+            Label { Text(e.text).lineLimit(1) } icon: { Image(systemName: "terminal") }
+                .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                .labelStyle(TightLabel())
+                .padding(.leading, 4)
+        }
+    }
+
+    private func files(_ files: [Conversation.File]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("FILES CHANGED · \(files.count)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            ForEach(files) { f in
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f.path)])
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(f.created ? "A" : "M").foregroundStyle(f.created ? .green : .orange).frame(width: 10)
+                        Text(relative(f.path)).lineLimit(1).truncationMode(.middle)
+                    }
+                    .font(.system(size: 11, design: .monospaced))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("\(f.created ? "Created" : "Edited") · \(f.path) · click to show in Finder")
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func relative(_ path: String) -> String {
+        path.hasPrefix(folder + "/") ? String(path.dropFirst(folder.count + 1)) : Fmt.shortPath(path)
+    }
+}
+
+private struct TightLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) { configuration.icon.font(.system(size: 8, weight: .semibold)); configuration.title }
     }
 }
 
@@ -518,6 +756,7 @@ struct UsageTab: View {
                         HStack {
                             Text(chartKey == "five_hour" ? "5-hour limit, last 24 hours" : "Weekly limit, last 7 days")
                                 .font(.system(size: 13, weight: .semibold))
+                            InfoButton(text: "The same numbers /usage shows. They refresh whenever any Claude Code session is active. The dashed orange line is the pace forecast: it compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
                             Spacer()
                             Picker("", selection: $chartKey) {
                                 Text("5-hour").tag("five_hour")
@@ -533,11 +772,11 @@ struct UsageTab: View {
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
 
+                    UsageHeatmapView(samples: model.samples)
+
                     ProjectUsageView(model: model, pick: pick)
 
-                    Text("Updated \(Fmt.ago(u.updatedAt))\(u.model.map { " · \($0)" } ?? ""). These are the same numbers /usage shows. They refresh whenever any Claude Code session is active.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    Text("The pace line compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
+                    Text("Updated \(Fmt.ago(u.updatedAt))\(u.model.map { " · \($0)" } ?? "")")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 } else {
                     ContentUnavailableView("No usage numbers yet", systemImage: "chart.xyaxis.line",
@@ -580,6 +819,7 @@ struct ProjectUsageView: View {
             HStack {
                 Text(span == "five_hour" ? "Tokens by project, last 5 hours" : "Tokens by project, last 7 days")
                     .font(.system(size: 13, weight: .semibold))
+                InfoButton(text: "Input, output and cache-write tokens read from transcripts. Click a project to see its sessions.")
                 Spacer()
                 Picker("", selection: $span) {
                     Text("5 hours").tag("five_hour")
@@ -600,8 +840,6 @@ struct ProjectUsageView: View {
             } else {
                 ProgressView().controlSize(.small)
             }
-            Text("Input, output and cache-write tokens read from transcripts. Click a project to see its sessions.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
@@ -718,250 +956,78 @@ struct UsageChart: View {
     }
 }
 
-enum SettingsPage: String, CaseIterable, Identifiable {
-    case general = "General", notifications = "Notifications", storage = "Storage", health = "Health"
-    var id: String { rawValue }
-}
 
-struct SettingsTab: View {
-    let model: AppModel
-    @AppStorage("barStyle") private var barStyle = BarStyle.closest.rawValue
-    @AppStorage(Notifier.Key.waiting) private var notifyWaiting = true
-    @AppStorage(Notifier.Key.finished) private var notifyFinished = true
-    @AppStorage(Notifier.Key.limits) private var notifyLimits = true
-    @AppStorage("settingsPage") private var page = SettingsPage.general.rawValue
-    @StateObject private var updater = Updater()
-    @State private var cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-    @State private var confirmCleanup = false
-    @AppStorage("autoCleanLeftovers") private var autoCleanLeftovers = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var old: [HistorySession] { model.closed.filter { $0.lastActive < cutoff } }
-    static let hookKeys = [("claude", "Claude Code hooks"), ("codex", "Codex hooks"), ("gemini", "Gemini CLI hooks"), ("statusLine", "Status line (usage numbers)")]
-
-    private func healthRow(_ title: String, _ state: String?) -> some View {
-        LabeledContent(title) {
-            Group {
-                switch state {
-                case "ok": Label("Working", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                case "missing": Label("Not set up", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                case "absent": Text("Not installed").foregroundStyle(.secondary)
-                default: ProgressView().controlSize(.small)
-                }
-            }
-            .transition(.opacity)
-            .animation(Motion.fast(reduceMotion), value: state)
-        }
-    }
+struct InfoButton: View {
+    let text: String
+    @State private var shown = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            healthSummary.padding([.horizontal, .top], 20)
-            Picker("", selection: $page) {
-                ForEach(SettingsPage.allCases) { Text($0.rawValue).tag($0.rawValue) }
+        Button { shown.toggle() } label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(text)
+            .accessibilityLabel("About this")
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                Text(text).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 280, alignment: .leading).padding(12)
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
-            .padding(.top, 12)
-            Form {
-                switch SettingsPage(rawValue: page) ?? .general {
-                case .general: general
-                case .notifications: notifications
-                case .storage: storage
-                case .health: health
-                }
-            }
-            .formStyle(.grouped)
-            .id(page)
-            .transition(.opacity)
-        }
-        .animation(Motion.fast(reduceMotion), value: page)
-        .onAppear { updater.check() }
-        .task { await model.checkHealth() }
-        .task { await model.refreshStorage() }
-    }
-
-    @ViewBuilder private var healthSummary: some View {
-        let missing = Self.hookKeys.filter { model.health?[$0.0] as? String == "missing" }
-        HStack(spacing: 8) {
-            if model.health == nil {
-                ProgressView().controlSize(.small)
-                Text("Checking hooks…").foregroundStyle(.secondary)
-            } else if model.health?["error"] != nil {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Couldn't run the hook check (python3 missing?)")
-            } else if missing.isEmpty {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("All hooks working")
-            } else {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("\(missing.count) need\(missing.count == 1 ? "s" : "") repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
-                Spacer()
-                Button("Repair hooks") { Task { await model.repairHooks() } }.buttonStyle(.borderedProminent).controlSize(.small)
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.system(size: 12))
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill((missing.isEmpty ? Color.green : Color.orange).opacity(model.health == nil ? 0 : 0.1)))
-        .animation(Motion.fast(reduceMotion), value: missing.count)
-    }
-
-    @ViewBuilder private var general: some View {
-        Section {
-            Picker("Keep session history for", selection: Binding(get: { model.retentionDays }, set: { model.setRetention($0) })) {
-                ForEach(Retention.choices(current: model.retentionDays), id: \.self) { d in
-                    Text(Retention.label(d)).tag(d)
-                }
-            }
-            .pickerStyle(.segmented)
-            Text("Claude Code deletes saved sessions older than this on its own (setting: cleanupPeriodDays). 30 days is the most Agent Deck offers.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        } header: { Text("History") }
-
-        Section {
-            Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
-        } header: { Text("Prompts") } footer: {
-            Text("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-
-        Section {
-            Picker("Menu bar shows", selection: $barStyle) {
-                ForEach(BarStyle.allCases) { Text($0.title).tag($0.rawValue) }
-            }
-            Toggle("Open at login", isOn: Binding(get: { model.opensAtLogin }, set: { model.setOpensAtLogin($0) }))
-        } header: { Text("App") }
-
-        Section {
-            HStack {
-                Text(updater.status)
-                Spacer()
-                if updater.updatesAvailable > 0 {
-                    Button("Update now") { updater.update() }.buttonStyle(.borderedProminent).disabled(updater.busy)
-                } else {
-                    Button("Check for updates") { updater.check() }.disabled(updater.busy)
-                }
-            }
-        } header: { Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")") }
-    }
-
-    @ViewBuilder private var notifications: some View {
-        Section {
-            Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
-            Toggle("A session finishes a task that took over a minute", isOn: $notifyFinished)
-            Toggle("A usage limit passes 80% and 95%", isOn: $notifyLimits)
-        } header: { Text("Notify me when") } footer: {
-            Text("If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder private var storage: some View {
-        Section {
-            if let st = model.storage {
-                StorageBar(parts: [("Conversations", st.conversations, .blue), ("Scratchpads", st.scratchpads, .purple), ("Undo backups", st.undoBackups, .teal)])
-                HStack {
-                    Text(st.orphans.isEmpty ? "No leftovers from deleted sessions"
-                         : "\(st.orphans.count) leftover\(st.orphans.count == 1 ? "" : "s") from deleted sessions · \(Fmt.bytes(st.orphanBytes))")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Clean up leftovers") { Task { await model.cleanLeftovers() } }.disabled(st.orphans.isEmpty)
-                }
-            } else {
-                HStack { ProgressView().controlSize(.small); Text("Measuring…").foregroundStyle(.secondary) }
-            }
-            Toggle("Clean up leftovers automatically once a day", isOn: $autoCleanLeftovers)
-        } header: { Text("Claude storage") } footer: {
-            Text("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-
-        Section {
-            DatePicker("Delete closed sessions last used before", selection: $cutoff, displayedComponents: .date)
-            HStack {
-                Text("\(old.count) session\(old.count == 1 ? "" : "s") · \(Fmt.bytes(old.reduce(0) { $0 + $1.bytes }))").foregroundStyle(.secondary)
-                    .contentTransition(.numericText(value: Double(old.count)))
-                    .animation(Motion.fast(reduceMotion), value: old.count)
-                Spacer()
-                if confirmCleanup {
-                    Text("Move them to the Trash?")
-                    Button("Cancel") { confirmCleanup = false }
-                    Button("Delete", role: .destructive) { model.delete(old); confirmCleanup = false }
-                } else {
-                    Button("Clean up…", role: .destructive) { confirmCleanup = true }.disabled(old.isEmpty)
-                }
-            }
-        } header: { Text("Clean up now") } footer: {
-            Text("This frees space on your Mac. Sessions listed on claude.ai or in the phone app are kept on Anthropic's servers and aren't affected.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder private var health: some View {
-        Section {
-            ForEach(Self.hookKeys, id: \.0) { key, title in healthRow(title, model.health?[key] as? String) }
-            HStack {
-                if model.health?["error"] != nil { Text("Couldn't run the check (python3 missing?)").foregroundStyle(.orange) }
-                Spacer()
-                Button("Repair hooks") { Task { await model.repairHooks() } }
-            }
-        } header: { Text("Health") } footer: {
-            Text("Repair puts Agent Deck's hooks back without touching your own. Codex runs a new hook only after you approve it once: open Codex and type /hooks. A missing status line comes back by running install.sh again.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-
-        Section {
-            LabeledContent("Usage snapshot", value: FileManager.default.fileExists(atPath: model.paths.statusFile.path)
-                           ? "received \(model.usage.map { Fmt.ago($0.updatedAt) } ?? "—")" : "not received yet")
-            LabeledContent("claude command", value: model.cli?.executable.path ?? "not found")
-        } header: { Text("Status") }
     }
 }
 
-struct StorageBar: View {
-    let parts: [(name: String, bytes: Int64, color: Color)]
+struct UsageHeatmapView: View {
+    let samples: [UsageSample]
 
     var body: some View {
-        let total = max(parts.reduce(0) { $0 + $1.bytes }, 1)
-        VStack(alignment: .leading, spacing: 8) {
-            GeometryReader { g in
-                HStack(spacing: 2) {
-                    ForEach(parts, id: \.name) { p in
-                        Rectangle().fill(p.color.gradient)
-                            .frame(width: max(p.bytes > 0 ? 3 : 0, (g.size.width - 4) * CGFloat(p.bytes) / CGFloat(total)))
+        let m = UsageHeatmap.compute(samples)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("When you use the most, last 7 days").font(.system(size: 13, weight: .semibold))
+                InfoButton(text: "Each square is one hour. The darker it is, the more your 5-hour limit went up in that hour. It fills in from the usage readings Agent Deck saves while Claude Code runs. A rise between readings more than two hours apart is left out, since it can't be placed in one hour.")
+                Spacer()
+            }
+            if m.peak <= 0 {
+                Text("Not enough readings yet. This fills in as you use Claude Code.").font(.system(size: 12)).foregroundStyle(.secondary)
+            } else {
+                Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                    GridRow {
+                        Text("")
+                        ForEach(0..<24, id: \.self) { h in
+                            Text(h % 6 == 0 ? "\(h)" : "").font(.system(size: 9)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                        }
+                    }
+                    ForEach(0..<7, id: \.self) { d in
+                        GridRow {
+                            Text(m.weekdaySymbols[d]).font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 30, alignment: .leading)
+                            ForEach(0..<24, id: \.self) { h in
+                                let v = m.cells[d][h]
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(v > 0 ? Color.accentColor.opacity(0.15 + 0.85 * v / m.peak) : Color.secondary.opacity(0.08))
+                                    .frame(height: 14)
+                                    .help(v > 0 ? "\(m.weekdaySymbols[d]) \(h):00 · +\(Int(v.rounded())) points" : "")
+                            }
+                        }
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(summary(m))
+                Text(summary(m)).font(.system(size: 12)).foregroundStyle(m.limitHits > 0 ? Color.orange : .secondary)
             }
-            .frame(height: 12)
-            HStack(spacing: 16) {
-                ForEach(parts, id: \.name) { p in
-                    HStack(spacing: 5) {
-                        Circle().fill(p.color).frame(width: 8, height: 8)
-                        Text(p.name)
-                        Text(Fmt.bytes(p.bytes)).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .font(.system(size: 11))
         }
-        .accessibilityElement(children: .combine)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
     }
-}
 
-enum Retention {
-    static let presets = [7, 14, 30]
-    static func choices(current: Int) -> [Int] { presets.contains(current) || current > 30 ? presets : (presets + [current]).sorted() }
-    static func label(_ d: Int) -> String { d == 7 ? "1 week" : d == 14 ? "2 weeks" : "\(d) days" }
-}
+    private func summary(_ m: UsageHeatmap) -> String {
+        let busiest = m.busiest.map { "Busiest: \($0.day) \(hour($0.from))–\(hour($0.to))." } ?? ""
+        let hits = m.limitHits > 0 ? " You reached the 5-hour limit \(m.limitHits) time\(m.limitHits == 1 ? "" : "s")." : ""
+        return busiest + hits
+    }
 
-enum BarStyle: String, CaseIterable, Identifiable {
-    case closest, ringOnly
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .closest: return "Closest limit · running sessions"
-        case .ringOnly: return "Ring only"
-        }
+    private func hour(_ h: Int) -> String {
+        var c = DateComponents()
+        c.hour = h % 24
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("j")
+        return Calendar.current.date(from: c).map(f.string(from:)) ?? "\(h)"
     }
 }

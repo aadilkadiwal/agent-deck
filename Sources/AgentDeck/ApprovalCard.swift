@@ -16,22 +16,33 @@ struct ApprovalCard: View {
     private static let previewLines = 8
 
     private var outcome: ApprovalAnswer? { model.outcomes[request.id] }
+    private var risk: String? { request.risk }
     private var tint: Color {
         switch outcome {
         case .deny, .denyWith: .red
         case .allow, .acceptEdits, .answers: .green
-        case .terminal, nil: .orange
+        case .terminal: .orange
+        case nil: risk == nil ? .orange : .red
         }
+    }
+
+    private var place: String? {
+        let name = model.sessionName(request.sessionId, cwd: request.cwd)
+        let folder = Fmt.folderName(request.cwd)
+        let branch = model.branches[request.cwd].map { "⎇ \($0)" }
+        let parts = [folder == name || folder.isEmpty ? nil : folder, branch].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: icon).foregroundStyle(.orange)
-                    .symbolEffect(.bounce, value: arrived)
                 Circle().fill(SessionColor.of(request.sessionId)).frame(width: 7, height: 7)
                 Text(model.sessionName(request.sessionId, cwd: request.cwd)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(title).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    .layoutPriority(1)
+                if let place {
+                    Text("· \(place)").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
                 Spacer(minLength: 4)
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let s = max(0, Int(ctx.date.timeIntervalSince(request.receivedAt)))
@@ -41,6 +52,19 @@ struct ApprovalCard: View {
                 }
                 IconButton(symbol: "terminal", help: "Show it in the terminal instead") { model.openSession(id: request.sessionId) }
             }
+            HStack(spacing: 6) {
+                Image(systemName: icon).foregroundStyle(risk == nil ? Color.orange : Color.red)
+                    .symbolEffect(.bounce, value: arrived)
+                Text(title).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                if let risk {
+                    Text("RISKY · \(risk)")
+                        .font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.red))
+                        .help("This command \(risk). It can't be allowed with ⌃⌥A or ⌘⏎; click Allow once if you mean it.")
+                }
+            }
+            .accessibilityElement(children: .combine)
             if let d = request.description, request.kind == .permission {
                 Text(d).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
             }
@@ -49,7 +73,7 @@ struct ApprovalCard: View {
                 let long = !roomy && lines.count > Self.previewLines
                 ScrollView {
                     Text(styled(long && !expanded ? lines.prefix(Self.previewLines).joined(separator: "\n") : request.detail))
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(request.kind == .plan ? .system(size: 12) : .system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(6)
@@ -122,6 +146,7 @@ struct ApprovalCard: View {
     }
 
     private func styled(_ detail: String) -> AttributedString {
+        if request.kind == .plan { return Self.plan(detail) }
         guard request.kind == .permission, ["Edit", "MultiEdit", "Write", "NotebookEdit"].contains(request.toolName) else {
             return AttributedString(detail)
         }
@@ -129,6 +154,26 @@ struct ApprovalCard: View {
         for (i, line) in detail.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             var a = AttributedString((i == 0 ? "" : "\n") + line)
             a.foregroundColor = i == 0 ? .secondary : line.hasPrefix("- ") ? .red : line.hasPrefix("+ ") ? .green : .primary
+            out += a
+        }
+        return out
+    }
+
+    // Text renders only inline Markdown, so headings and list markers are converted by hand.
+    static func plan(_ markdown: String) -> AttributedString {
+        var out = AttributedString()
+        for (i, raw) in markdown.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            var line = String(raw), heading = false
+            if let r = line.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
+                line.removeSubrange(r)
+                heading = true
+            } else if let r = line.range(of: #"^\s*[-*+]\s+"#, options: .regularExpression) {
+                let indent = String(line[r].prefix { $0 == " " })
+                line.replaceSubrange(r, with: indent + "• ")
+            }
+            var a = (try? AttributedString(markdown: line, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(line)
+            if heading { a.font = .system(size: 12.5, weight: .semibold) }
+            if i > 0 { out += AttributedString("\n") }
             out += a
         }
         return out
@@ -144,7 +189,9 @@ struct ApprovalCard: View {
 
     private var title: String {
         switch request.kind {
-        case .permission: return "\(request.agent == .claude ? "" : "(\(request.agent.label)) ")wants to use \(request.toolName)"
+        case .permission:
+            let what = ApprovalRequest.shellTools.contains(request.toolName) ? "wants to run a command" : "wants to use \(request.toolName)"
+            return "\(request.agent == .claude ? "" : "(\(request.agent.label)) ")\(what)"
         case .plan: return "has a plan for you"
         case .question: return request.questions.count == 1 ? "asks" : "asks \(request.questions.count) questions"
         }
@@ -172,7 +219,27 @@ struct ApprovalCard: View {
         model.answer(request.id, why.isEmpty ? .deny : .denyWith(reason: why))
     }
 
-    private var decideButtons: some View {
+    @ViewBuilder private var decideButtons: some View {
+        if risk != nil { riskyButtons } else { normalButtons }
+    }
+
+    private var riskyButtons: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
+                    .buttonStyle(.borderedProminent).tint(.gray)
+                    .help("Deny, and optionally tell Claude why")
+                Spacer()
+                Button("Allow once") { model.answer(request.id, .allow(always: false)) }
+                    .help("Allow this one command. Always allow isn't offered for risky commands.")
+            }
+            if hotkeyTarget {
+                Text("⌃⌥D deny from any app · Allow needs a click").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var normalButtons: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }

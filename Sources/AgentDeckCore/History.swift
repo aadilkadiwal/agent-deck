@@ -10,7 +10,11 @@ public struct HistorySession: Identifiable, Equatable, Sendable {
     public var model: String?
     public var lastActive: Date
     public var bytes: Int64
+    public var branch: String? = nil
+    public var firstAt: Date? = nil
+    public var lastAt: Date? = nil
     public var shortId: String { String(sessionId.prefix(8)) }
+    public var duration: TimeInterval? { firstAt.flatMap { f in lastAt.map { $0.timeIntervalSince(f) } } }
     /// Opened and closed without a reply from Claude. Small files are read whole, so "no model
     /// seen" is reliable for them.
     public var isEmpty: Bool { model == nil && bytes < Int64(HistoryScanner.chunk) }
@@ -67,11 +71,20 @@ public final class HistoryScanner: @unchecked Sendable {
 
     /// Later lines win, so pass chunks in file order.
     static func parse(chunks: [Data], sessionId: String, url: URL, mtime: Date, size: Int64, folderSlug: String) -> HistorySession? {
-        var cwd: String?, custom: String?, agent: String?, ai: String?, prompt: String?, model: String?
+        var cwd: String?, custom: String?, agent: String?, ai: String?, prompt: String?, model: String?, branch: String?
+        var firstAt: Date?, lastAt: Date?
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         for chunk in chunks {
             for line in chunk.split(separator: UInt8(ascii: "\n")) {
                 guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
                 if cwd == nil, let c = o["cwd"] as? String { cwd = c }
+                if let b = o["gitBranch"] as? String, !b.isEmpty, b != "HEAD" { branch = b }
+                if let t = o["type"] as? String, t == "user" || t == "assistant",
+                   let ts = (o["timestamp"] as? String).flatMap(iso.date(from:)) {
+                    firstAt = firstAt ?? ts
+                    lastAt = ts
+                }
                 switch o["type"] as? String {
                 case "custom-title": custom = (o["customTitle"] as? String) ?? custom
                 case "agent-name": agent = (o["agentName"] as? String) ?? agent
@@ -87,7 +100,8 @@ public final class HistoryScanner: @unchecked Sendable {
         let name = [custom, agent, ai, p.map { String($0.prefix(60)) }]
             .compactMap { $0 }.first { !$0.isEmpty } ?? String(sessionId.prefix(8))
         return HistorySession(sessionId: sessionId, fileURL: url, cwd: cwd ?? folderSlug, name: name,
-                              lastPrompt: p, model: model, lastActive: mtime, bytes: size)
+                              lastPrompt: p, model: model, lastActive: mtime, bytes: size,
+                              branch: branch, firstAt: firstAt, lastAt: lastAt)
     }
 
     /// Renames a closed session the way Claude Code's /rename does: a `custom-title` line at the end.
@@ -122,7 +136,8 @@ public enum ActiveRange: String, CaseIterable, Identifiable, Sendable {
     case any = "Any time", today = "Today", week = "Last 7 days", olderThanWeek = "Older than 7 days", olderThanMonth = "Older than 30 days"
     public var id: String { rawValue }
 
-    public func matches(_ d: Date, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+    public func matches(_ d: Date) -> Bool {
+        let now = Date(), calendar = Calendar.current
         let age = now.timeIntervalSince(d)
         switch self {
         case .any: return true
@@ -197,5 +212,105 @@ public enum ProjectUsage {
             if n > 0 { by[s.cwd, default: 0] += n }
         }
         return by.map { Entry(folder: $0.key, tokens: $0.value) }.sorted { $0.tokens > $1.tokens }
+    }
+}
+
+public struct Conversation: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case prompt, reply, tool, command }
+    public struct Entry: Identifiable, Equatable, Sendable {
+        public let id: Int
+        public let kind: Kind
+        public let text: String
+        public let at: Date?
+    }
+    public struct File: Identifiable, Equatable, Sendable {
+        public var id: String { path }
+        public let path: String
+        public let created: Bool
+    }
+
+    public var entries: [Entry] = []
+    public var files: [File] = []
+    public var dropped = 0
+
+    static let maxText = 1500
+    static let notPrompt = ["<local-command-", "<command-", "<system-reminder>", "<bash-", "<user-memory-input>", "<task-notification>"]
+    static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
+
+    public static func load(_ url: URL) -> Conversation {
+        guard let data = try? Data(contentsOf: url) else { return Conversation() }
+        return parse(data)
+    }
+
+    static func parse(_ data: Data) -> Conversation {
+        let limit = 300
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var entries: [Entry] = []
+        var order: [String] = [], created = Set<String>()
+        func add(_ kind: Kind, _ text: String, _ at: Date?) {
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return }
+            entries.append(Entry(id: entries.count, kind: kind, text: t.count > maxText ? String(t.prefix(maxText)) + "…" : t, at: at))
+        }
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  o["isSidechain"] as? Bool != true else { continue }
+            let type = o["type"] as? String
+            guard type == "user" || type == "assistant" else { continue }
+            let at = (o["timestamp"] as? String).flatMap(iso.date(from:))
+            let content = (o["message"] as? [String: Any])?["content"]
+            if type == "user" {
+                if let r = o["toolUseResult"] as? [String: Any], r["type"] as? String == "create", let p = r["filePath"] as? String { created.insert(p) }
+                guard o["isMeta"] as? Bool != true, o["isCompactSummary"] as? Bool != true else { continue }
+                let text: String
+                if let s = content as? String { text = s }
+                else if let parts = content as? [[String: Any]], !parts.contains(where: { $0["type"] as? String == "tool_result" }) {
+                    text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: "\n")
+                } else { continue }
+                if let cmd = command(text) { add(.command, cmd, at) }
+                else if text.hasPrefix("[Request interrupted") { add(.command, "Interrupted", at) }
+                else if !notPrompt.contains(where: text.hasPrefix) { add(.prompt, text, at) }
+                continue
+            }
+            for part in content as? [[String: Any]] ?? [] {
+                switch part["type"] as? String {
+                case "text": add(.reply, part["text"] as? String ?? "", at)
+                case "tool_use":
+                    let name = part["name"] as? String ?? "Tool"
+                    let input = part["input"] as? [String: Any] ?? [:]
+                    if editTools.contains(name), let p = (input["file_path"] ?? input["notebook_path"]) as? String, !order.contains(p) { order.append(p) }
+                    add(.tool, toolLine(name, input), at)
+                default: break
+                }
+            }
+        }
+        var c = Conversation()
+        c.dropped = max(0, entries.count - limit)
+        c.entries = Array(entries.suffix(limit))
+        c.files = order.map { File(path: $0, created: created.contains($0)) }
+        return c
+    }
+
+    /// "<command-name>/clear</command-name>…" → "/clear"; other tags are output, not prompts.
+    static func command(_ text: String) -> String? {
+        guard let r = text.range(of: "<command-name>"), let e = text.range(of: "</command-name>", range: r.upperBound..<text.endIndex) else { return nil }
+        let name = String(text[r.upperBound..<e.lowerBound])
+        let args = text.range(of: "<command-args>").flatMap { a in
+            text.range(of: "</command-args>", range: a.upperBound..<text.endIndex).map { String(text[a.upperBound..<$0.lowerBound]) }
+        } ?? ""
+        return args.isEmpty ? name : "\(name) \(args)"
+    }
+
+    static func toolLine(_ name: String, _ input: [String: Any]) -> String {
+        let firstLine = { (s: String) in s.split(separator: "\n").first.map(String.init) ?? s }
+        let detail: String?
+        if let p = (input["file_path"] ?? input["notebook_path"]) as? String { detail = (p as NSString).lastPathComponent }
+        else if let c = input["command"] as? String { detail = firstLine(c) }
+        else if let d = input["description"] as? String { detail = d }
+        else if let q = (input["pattern"] ?? input["query"] ?? input["url"] ?? input["prompt"]) as? String { detail = firstLine(q) }
+        else { detail = nil }
+        guard let detail, !detail.isEmpty else { return name }
+        return "\(name) · \(detail.count > 120 ? String(detail.prefix(120)) + "…" : detail)"
     }
 }
