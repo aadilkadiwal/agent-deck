@@ -13,9 +13,18 @@ enum Motion {
     static func spring(reduced: Bool) -> Animation { reduced ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.78) }
 }
 
-/// A steady color per session, so a prompt card matches its row. Orange is left out: it means "needs you".
+/// A steady color per session, so a prompt card matches its row. No green or orange: they mean working / needs you.
 enum SessionColor {
-    private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan, .green, .brown]
+    private static let palette: [Color] = [.blue, .teal, .purple, .pink, .indigo, .cyan,
+                                           adaptive(light: (0.39, 0.45, 0.55), dark: (0.58, 0.64, 0.74)),
+                                           adaptive(light: (0.61, 0.31, 0.59), dark: (0.80, 0.52, 0.78))]
+
+    private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
 
     static func of(_ sessionId: String) -> Color {
         // String.hashValue changes every launch; this doesn't.
@@ -27,8 +36,8 @@ struct Ring: View {
     let percent: Double
     var size: CGFloat = 44
     var line: CGFloat = 5
-    var tint: Color?
     var delay: Double = 0
+    var showsLabel = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shown: Double = 0
 
@@ -40,12 +49,14 @@ struct Ring: View {
             Circle().stroke(Color.secondary.opacity(0.2), lineWidth: line)
             Circle()
                 .trim(from: 0, to: shown / 100)
-                .stroke(tint ?? Level.color(shown), style: StrokeStyle(lineWidth: line, lineCap: .round))
+                .stroke(Level.color(shown), style: StrokeStyle(lineWidth: line, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text("\(Int(shown.rounded()))%")
-                .font(.system(size: size * 0.24, weight: .semibold))
-                .monospacedDigit()
-                .contentTransition(.numericText(value: shown))
+            if showsLabel && size * 0.24 >= 11 {
+                Text("\(Int(shown.rounded()))%")
+                    .font(.system(size: size * 0.24, weight: .semibold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: shown))
+            }
         }
         .keyframeAnimator(initialValue: 1.0, trigger: level) { v, scale in
             v.scaleEffect(still ? 1 : scale)
@@ -65,7 +76,7 @@ struct Ring: View {
 
 struct UsageTile: View {
     let window: LimitWindow
-    var size: CGFloat = 44
+    var size: CGFloat = 48
     var forecast: Forecast = .unknown
     var delay: Double = 0
 
@@ -74,10 +85,10 @@ struct UsageTile: View {
         HStack(spacing: 10) {
             Ring(percent: pct, size: size, line: size / 8.5, delay: delay)
             VStack(alignment: .leading, spacing: 2) {
-                Text(window.label).font(.system(size: 13, weight: .semibold))
-                Text(Fmt.resets(window.resetsAt)).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(window.label).font(.body.weight(.semibold))
+                Text(Fmt.resets(window.resetsAt)).font(.subheadline).foregroundStyle(.secondary)
                 if let f = Fmt.forecast(forecast) {
-                    Text(f).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                    Text(f).font(.subheadline.weight(.medium)).lineLimit(2)
                         .foregroundStyle(forecast == .safeUntilReset ? Color.secondary : Color.orange)
                 }
             }

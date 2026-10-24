@@ -51,6 +51,10 @@ final class AppModel {
         }
     }
     var detailsOpen = false
+    var pinnedOpen = false
+    @ObservationIgnored var showDetails: ((DetailsTab) -> Void)?
+    @ObservationIgnored var focusApproval: Int?
+    private(set) var menuHotkeyFailed = false
 
     let paths = ClaudePaths()
     let cli: ClaudeCLI?
@@ -88,9 +92,11 @@ final class AppModel {
             try? SMAppService.mainApp.register()
         }
         notifier.onOpen = { [weak self] id in self?.openSession(id: id) }
-        notifier.onAnswer = { [weak self] id, answer in self?.answer(id, answer) }
+        notifier.onAnswer = { [weak self] id, answer in self?.answerFromNotification(id, answer) }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
+        hotkeys.onMenu = { StatusMenu.toggle() }
+        menuHotkeyFailed = !hotkeys.setMenuKey(MenuHotkey.current)
         UserDefaults.standard.register(defaults: [Self.approvalsKey: true])
         setApprovals(UserDefaults.standard.bool(forKey: Self.approvalsKey))
         watch(paths.sessionsDir)
@@ -112,7 +118,7 @@ final class AppModel {
         var parts: [String] = []
         if let w = usage?.fiveHour { parts.append("5-hour limit \(Int(w.percent().rounded()))%") }
         if let w = usage?.weekly { parts.append("weekly \(Int(w.percent().rounded()))%") }
-        parts.append("\(live.count) session\(live.count == 1 ? "" : "s") running")
+        parts.append("\(Fmt.count(live.count, "session")) running")
         let waiting = count(.blocked)
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
         return parts.joined(separator: " · ")
@@ -126,6 +132,10 @@ final class AppModel {
 
     func forecast(_ w: LimitWindow) -> Forecast { Forecast.compute(w, samples: samples) }
 
+    func lastPrompt(_ sessionId: String) -> String {
+        history.first { $0.sessionId == sessionId }?.lastPrompt ?? ""
+    }
+
     var recentFolders: [String] {
         var seen = Set<String>()
         return (live.map(\.cwd) + history.map(\.cwd))
@@ -136,7 +146,7 @@ final class AppModel {
     /// Session files and usage every call. `claude agents` (which starts a process) every 5 s while
     /// a window is open, otherwise once a minute or when a session starts/stops. History once a minute.
     func refresh(history forceHistory: Bool = false, agents forceAgents: Bool = false) async {
-        let agentsEvery: TimeInterval = (menuOpen || detailsOpen) ? 5 : 60
+        let agentsEvery: TimeInterval = (menuOpen || detailsOpen || pinnedOpen) ? 5 : 60
         if let cli, forceAgents || Date().timeIntervalSince(lastAgentsFetch) >= agentsEvery {
             lastAgentsFetch = Date()
             lastAgents = await cli.listAgentsJSON()
@@ -267,6 +277,15 @@ final class AppModel {
         }) { try await $0.clear(s) }
     }
 
+    func compact(_ s: LiveSession) {
+        perform(s.sessionId, success: "Compacting \(displayName(s)). Its context bar updates when it's done.") { try await $0.compact(s) }
+    }
+
+    func setMenuHotkey(_ key: MenuHotkey) {
+        UserDefaults.standard.set(key.rawValue, forKey: MenuHotkey.key)
+        menuHotkeyFailed = !hotkeys.setMenuKey(key)
+    }
+
     func rename(_ s: LiveSession, to name: String) {
         perform(s.sessionId, success: "Renamed to \(name).") { try await $0.rename(s, to: name) }
     }
@@ -314,19 +333,19 @@ final class AppModel {
         }
         let (fileFailed, filesMoved) = Leftovers.moveToTrash(files)
         moved += filesMoved
-        let filesNote = files.isEmpty ? "" : " and \(files.count - fileFailed) file\(files.count - fileFailed == 1 ? "" : "s")"
+        let filesNote = files.isEmpty ? "" : " and \(Fmt.count(files.count - fileFailed, "file"))"
         banner = failed + fileFailed == 0
-            ? Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
+            ? Banner(text: "Moved \(Fmt.count(done, "session"))\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
                 self?.undoDelete(moved)
             }
-            : Banner(text: "Moved \(done) session\(done == 1 ? "" : "s")\(filesNote) to the Trash; \(failed + fileFailed) couldn't be moved.", isError: true)
+            : Banner(text: "Moved \(Fmt.count(done, "session"))\(filesNote) to the Trash; \(failed + fileFailed) couldn't be moved.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
     }
 
     private func undoDelete(_ moved: [Leftovers.Moved]) {
         let failed = Leftovers.restore(moved)
         banner = failed == 0 ? Banner(text: "Restored from the Trash.")
-                             : Banner(text: "\(failed) item\(failed == 1 ? "" : "s") couldn't be restored. They're still in the Trash.", isError: true)
+                             : Banner(text: "\(Fmt.count(failed, "item")) couldn't be restored. They're still in the Trash.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
     }
 
@@ -352,8 +371,8 @@ final class AppModel {
         }.value
         let failed = Leftovers.moveToTrash(orphans).failed
         if !quiet || failed > 0 {
-            banner = failed == 0 ? Banner(text: "Moved \(orphans.count) leftover\(orphans.count == 1 ? "" : "s") (\(Fmt.bytes(bytes))) to the Trash.")
-                : Banner(text: "\(failed) leftover\(failed == 1 ? "" : "s") couldn't be moved to the Trash.", isError: true)
+            banner = failed == 0 ? Banner(text: "Moved \(Fmt.count(orphans.count, "leftover")) (\(Fmt.bytes(bytes))) to the Trash.")
+                : Banner(text: "\(Fmt.count(failed, "leftover")) couldn't be moved to the Trash.", isError: true)
         }
         if storage != nil { await refreshStorage() }
     }
@@ -473,8 +492,23 @@ final class AppModel {
         updateApprovalUI()
     }
 
+    // A notification posted before its category changed can still carry an Allow button.
+    private func answerFromNotification(_ id: Int, _ a: ApprovalAnswer) {
+        if case .allow = a, approvals.first(where: { $0.id == id })?.risk != nil { openPrompt(id); return }
+        answer(id, a)
+    }
+
+    private func openPrompt(_ id: Int) {
+        if let r = approvals.first(where: { $0.id == id }) { openSession(id: r.sessionId) }
+    }
+
     private func answerWithHotkey(allow: Bool) {
         guard let r = pendingApprovals.first(where: { $0.kind == .permission }) else { return }
+        if allow, let risk = r.risk {
+            banner = Banner(text: "Not allowed by shortcut: this command \(risk). Click Allow once in the menu if you mean it.", isError: true)
+            NSSound.beep()
+            return
+        }
         answer(r.id, allow ? .allow(always: false) : .deny)
     }
 
@@ -563,14 +597,16 @@ enum Fmt {
         return p
     }
 
-    static func ago(_ d: Date, now: Date = Date()) -> String {
+    static func ago(_ d: Date) -> String {
+        let now = Date()
         if now.timeIntervalSince(d) < 60 { return "now" }
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: d, relativeTo: now)
     }
 
-    static func resets(_ d: Date?, now: Date = Date()) -> String {
+    static func resets(_ d: Date?) -> String {
+        let now = Date()
         guard let d else { return "" }
         if d <= now { return "reset" }
         let f = DateFormatter()
@@ -595,6 +631,11 @@ enum Fmt {
         case .safeUntilReset: return "Safe until reset at this pace"
         case .unknown: return nil
         }
+    }
+
+    // Foundation's grammar agreement ("1 session", "3 sessions"), so plurals stay localizable.
+    static func count(_ n: Int, _ noun: String) -> String {
+        String(AttributedString(localized: "^[\(n) \(noun)](inflect: true)").characters)
     }
 
     static func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }

@@ -29,7 +29,7 @@ final class Updater: ObservableObject {
             _ = try? await Self.git(src, "fetch", "--quiet")
             let count = Int((try? await Self.git(src, "rev-list", "--count", "HEAD..@{u}")) ?? "0") ?? 0
             updatesAvailable = count
-            status = count == 0 ? "Up to date." : "Update available: \(count) new change\(count == 1 ? "" : "s")."
+            status = count == 0 ? "Up to date." : "Update available: \(Fmt.count(count, "new change"))."
         }
     }
 

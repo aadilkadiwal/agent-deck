@@ -10,7 +10,7 @@ struct SectionHeader: View {
             Spacer()
             if let trailing { Text(trailing) }
         }
-        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
         .padding(.horizontal, 8).padding(.vertical, 4)
     }
 }
@@ -61,7 +61,7 @@ struct Pill: View {
     let text: String
     var color: Color = .orange
     var body: some View {
-        Text(text).font(.system(size: 9, weight: .bold)).foregroundStyle(color)
+        Text(text).font(.subheadline.weight(.bold)).foregroundStyle(color)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(Capsule().fill(color.opacity(0.18)))
     }
@@ -71,7 +71,7 @@ struct ContextBar: View {
     let reading: ContextReading
     var body: some View {
         let percent = reading.percent
-        let tint: Color = percent >= 90 ? .red : .secondary
+        let tint = Self.tint(percent)
         HStack(spacing: 4) {
             Capsule().fill(Color.primary.opacity(0.12)).frame(width: 36, height: 4)
                 .overlay(alignment: .leading) { Capsule().fill(tint).frame(width: 36 * CGFloat(percent) / 100, height: 4) }
@@ -81,20 +81,25 @@ struct ContextBar: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Context \(percent) percent used")
     }
+
+    static let warnAt = 70
+    static func tint(_ percent: Int) -> Color { percent >= 90 ? .red : percent >= warnAt ? .orange : .secondary }
 }
 
 struct IconButton: View {
     let symbol: String
     var on = false
+    var tint: Color?
     let help: String
     var dimmed = false
     let action: () -> Void
     var body: some View {
+        let color = tint ?? (on ? Color.accentColor : nil)
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12))
-                .frame(width: 26, height: 22)
-                .foregroundStyle(on ? Color.accentColor : .secondary)
-                .background(RoundedRectangle(cornerRadius: 6).fill(on ? Color.accentColor.opacity(0.15) : .clear))
+                .frame(width: 28, height: 24)
+                .foregroundStyle(color ?? .secondary)
+                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(color?.opacity(0.15) ?? .clear))
         }
         .buttonStyle(.borderless)
         .disabled(dimmed)
@@ -152,10 +157,10 @@ struct HoverRow<Content: View>: View {
 
     var body: some View {
         let row = HStack(spacing: 8) { content }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 7).fill(hover || focused || selected ? Color.primary.opacity(0.07) : .clear))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(hover || focused || selected ? Color.primary.opacity(0.07) : .clear))
             .overlay {
-                if focused || selected { RoundedRectangle(cornerRadius: 7).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5) }
+                if focused || selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5) }
             }
             .animation(Motion.fast(reduceMotion), value: hover)
             .contentShape(Rectangle())
@@ -185,4 +190,135 @@ func highlighted(_ text: String, _ query: String) -> AttributedString {
         from = r.upperBound
     }
     return out
+}
+
+struct ActivityLine: View {
+    let model: AppModel
+    let session: LiveSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func isShown(_ s: LiveSession, _ model: AppModel) -> Bool {
+        s.isLeftover || s.state != .idle || (model.activity[s.sessionId]?.subagents.isEmpty == false)
+    }
+
+    var body: some View {
+        let s = session
+        let a = model.activity[s.sessionId]
+        let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\(Fmt.count($0, "agent"))" : nil }
+        let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
+        let text = [doing ?? Self.stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
+        Group {
+            if let since = model.busySince[s.sessionId], s.state == .busy {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let t = max(0, Int(ctx.date.timeIntervalSince(since)))
+                    Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
+                        .contentTransition(.numericText(countsDown: false))
+                        .animation(Motion.fast(reduceMotion), value: t)
+                }
+            } else {
+                Text(text)
+            }
+        }
+        .font(.subheadline).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
+    }
+
+    static func stateText(_ s: LiveSession) -> String {
+        if s.isLeftover { return "not running · old entry" }
+        switch s.state {
+        case .busy: return "working"
+        case .idle: return "idle"
+        case .blocked: return "waiting for you"
+        }
+    }
+}
+
+struct CompactUsage: View {
+    let model: AppModel
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        if let u = model.usage {
+            let closer = [u.fiveHour, u.weekly].compactMap { $0 }.max { $0.percent() < $1.percent() }
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    parts(u).lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(Fmt.resets(closer?.resetsAt)).foregroundStyle(.secondary).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(hover ? .secondary : .tertiary)
+                }
+                .font(.subheadline).monospacedDigit()
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(hover ? Color.primary.opacity(0.05) : .clear))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hover = $0 }
+            .help("Open usage details")
+            .accessibilityLabel(model.barSummary)
+        }
+    }
+
+    private func parts(_ u: UsageSnapshot) -> Text {
+        var items: [(String, Double)] = []
+        if let w = u.fiveHour { items.append(("5h", w.percent())) }
+        if let w = u.weekly { items.append(("Weekly", w.percent())) }
+        if let l = model.codexUsage.first { items.append(("Codex", l.percent)) }
+        return items.enumerated().reduce(Text("")) { out, e in
+            let (label, pct) = e.element
+            let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= 75 ? .semibold : .regular)
+                .foregroundColor(pct >= 75 ? Level.color(pct) : .primary)
+            return out + Text(e.offset == 0 ? "" : " · ").foregroundColor(.secondary) + Text("\(label) ").foregroundColor(.secondary) + value
+        }
+    }
+}
+
+struct Callout<Content: View>: View {
+    let tint: Color
+    var outlined = false
+    var alignment = VerticalAlignment.center
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: alignment, spacing: 8) { content }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(tint.opacity(0.12)))
+            .overlay { if outlined { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(tint.opacity(0.5)) } }
+    }
+}
+
+struct ConfirmRow: View {
+    let message: String
+    let confirmTitle: String
+    var destructive = false
+    let cancel: () -> Void
+    let confirm: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(message).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Cancel", action: cancel)
+            if destructive {
+                Button(confirmTitle, role: .destructive, action: confirm)
+            } else {
+                Button(confirmTitle, action: confirm).keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+}
+
+extension View {
+    func confirmBar() -> some View {
+        font(.callout)
+            .controlSize(.small)
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.accentColor.opacity(0.1)))
+    }
+}
+
+enum Radius {
+    static let inner: CGFloat = 6
+    static let row: CGFloat = 8
+    static let panel: CGFloat = 10
 }
