@@ -49,11 +49,13 @@ code { font-size: .9em; }
 
   <section>
     <h2>Dot, in the menu bar</h2>
-    <div class="bars"><img src="img/bar.png" alt="Dot and 34%"><img src="img/bar-limit.png" alt="Dot and 86% · out 15:58"><img src="img/bar-reached.png" alt="Dot and 100% · back 17:58"></div>
+    <div class="bars"><img src="img/bar.png" alt="Just Dot at 34%"><img src="img/bar-limit.png" alt="Dot and 86% · out 15:58"><img src="img/bar-reached.png" alt="Dot and 100% · back 17:58"></div>
     <ul>
-      <li>The number is your closer usage limit, 5-hour or weekly. It adds "out 15:58" when you're on pace to run out and "back 17:58" once you're at 100%.</li>
+      <li>Below 50% it's just Dot. Past that you get the number for whichever limit is closer, 5-hour or weekly, plus "out 15:58" when you're on pace to run out and "back 17:58" once you're at 100%.</li>
       <li>Dot's rim is the same meter: grey, orange from your warning level (80% unless you change it), red when full.</li>
       <li>Its face shows what your sessions need. A blue arc spins while a session works; an orange "!" means one is waiting for you, a red one that it wants to run something risky.</li>
+      <li>In the menu bar Dot holds still between blinks, so it costs next to no CPU.</li>
+      <li>Right-click Dot to snooze alerts for an hour, start a new session, or open Details or Settings.</li>
     </ul>
     <div class="faces">
       <div class="face"><img src="img/dot-idle.png" alt=""><b>Idle</b><span>blinks now and then</span></div>
@@ -73,10 +75,18 @@ code { font-size: .9em; }
     <div class="row">
       <figure><img src="img/menu.png" alt="The dropdown with three running sessions" width="370"></figure>
       <ul>
+        <li>Running and Recent tabs. It opens on Running, or on Recent when nothing is running. ⌘1 and ⌘2 switch.</li>
         <li>Dot and one sentence on top: what's running, and whether anything needs you. The counts are filters.</li>
         <li>Two slim bars for the 5-hour and weekly limits with their reset times. "Last hour" opens into a split by session.</li>
         <li>Each session: a blue dot while it works, its folder, its branch when that isn't main, and how long it has been working. Context shows once it passes 70%.</li>
-        <li>↑↓ to move, ⏎ to open, ⌘K for every action on the selected row. Recent closed sessions resume in iTerm.</li>
+        <li>↑↓ to move, ⏎ to open, ⌘K for every action on the selected row.</li>
+      </ul>
+    </div>
+    <div class="row">
+      <figure><img src="img/menu-recent.png" alt="The Recent tab with six closed sessions" width="370"></figure>
+      <ul>
+        <li>Recent lists closed sessions with how long ago you used them. Click one to resume it in iTerm.</li>
+        <li>Filtering by working or idle shrinks the panel to fit.</li>
       </ul>
     </div>
   </section>
@@ -123,7 +133,7 @@ code { font-size: .9em; }
   <section>
     <h2>Settings</h2>
     <div class="pair">
-      <figure><img src="img/settings-notifications.png" alt="Notifications settings"><figcaption>Alerts drop from the notch with a sound for each kind. Preview plays a sample of each.</figcaption></figure>
+      <figure><img src="img/settings-notifications.png" alt="Notifications settings"><figcaption>Alerts drop from the notch, each with one of Dot's own sounds; Preview plays them. A finished task shows the first line of Claude's reply. In a Focus only prompts get through, quietly, and the rest wait until it ends.</figcaption></figure>
       <figure><img src="img/settings-health.png" alt="Health settings"><figcaption>Health shows whether the hooks work and repairs them in one click.</figcaption></figure>
     </div>
   </section>

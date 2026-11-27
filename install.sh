@@ -52,6 +52,7 @@ else
 fi
 
 step "Building (first build takes about a minute)"
+"$SRC/scripts/signing-cert.sh" >/dev/null 2>&1 || true
 APP_BUILT="$("$SRC/scripts/build-app.sh" 2>&1 | tail -1)" || die "Build failed. Run $SRC/scripts/build-app.sh to see the error."
 [ -d "$SRC/$APP_BUILT" ] || die "Build failed. Run $SRC/scripts/build-app.sh to see the error."
 ok "Built"

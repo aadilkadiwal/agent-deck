@@ -88,18 +88,18 @@ struct SettingsView: View {
                 ForEach(MenuHotkey.allCases) { Text($0.title).tag($0) }
             }
             if model.menuHotkeyFailed {
-                Label("\((MenuHotkey(rawValue: menuHotkey) ?? .off).title) is already used by another app, so it does nothing here. Pick a different one.",
+                Label("Another app already uses \((MenuHotkey(rawValue: menuHotkey) ?? .off).title), so it does nothing here. Pick a different one.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundStyle(.orange)
             }
         } header: { Text("Menu") } footer: {
-            Note("Opens the dropdown with the newest question selected, so ⌘⏎ answers it and esc takes you back. ⌃⌥Space also switches input sources in macOS when you have more than one keyboard language.")
+            Note("Opens the menu with the newest prompt selected, so ⌘⏎ answers it and Esc closes it. Heads up: ⌃⌥Space also switches keyboard languages if you use more than one.")
         }
         Section {
             LabeledContent("Allow the oldest permission prompt", value: "⌃⌥A")
             LabeledContent("Deny the oldest permission prompt", value: "⌃⌥D")
         } header: { Text("Prompts") } footer: {
-            Note("Active only while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, can't be allowed with a shortcut: click Allow once in the menu.")
+            Note("These only work while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, always need a click on Allow once.")
         }
         Section {
             LabeledContent("Move · open", value: "↑ ↓ · ⏎")
@@ -119,13 +119,13 @@ struct SettingsView: View {
                 Text("Checking hooks…").foregroundStyle(.secondary)
             } else if model.health?["error"] != nil {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Couldn't run the hook check (python3 missing?)")
+                Text("Couldn't check the hooks. Is python3 installed?")
             } else if missing.isEmpty {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("All hooks working")
             } else {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Needs repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
+                Text("Needs a repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
                 Spacer()
                 Button("Repair hooks") { Task { await model.repairHooks() } }.buttonStyle(.borderedProminent).controlSize(.small)
             }
@@ -143,13 +143,13 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
-            Note("Claude Code deletes saved sessions older than this on its own. 30 days is the most Agent Deck offers.")
+            Note("Claude Code deletes saved sessions older than this by itself. Agent Deck goes up to 30 days.")
         } header: { Text("History") }
 
         Section {
             Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
         } header: { Text("Prompts") } footer: {
-            Note("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting; risky commands need a click. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
+            Note("Claude's prompts, questions and plans show up in the menu and as alerts. From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it. Risky commands always need a click. The terminal still asks too, and whichever you answer first counts. Turn this off and Claude asks only in the terminal.")
         }
 
         Section {
@@ -195,12 +195,12 @@ struct SettingsView: View {
                 .disabled(peekPlacement == PeekPlacement.banners.rawValue)
             }
         } header: { Text("Alerts") } footer: {
-            Note("Alerts drop from the notch, or from Agent Deck's menu bar icon on a screen without one, and play a sound for the kind of alert. They're hidden from screen sharing. When the screen is locked or you've been away for two minutes, they go out as macOS notifications instead.")
+            Note("Alerts drop from the notch, or from Dot in the menu bar on a screen without one, each with its own sound. Screen sharing doesn't show them. In a Focus, only prompts get through, quietly; the rest wait until it ends. If your screen is locked or you've been away for two minutes, they come as macOS notifications. Right-click Dot to snooze them for an hour.")
         }
         Section {
             Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
-            Toggle("A session finishes a task that took over a minute", isOn: $notifyFinished)
-            Toggle("A usage limit reaches your warning level, or is on pace to run out before it resets", isOn: $notifyLimits)
+            Toggle("A session finishes something that took over a minute", isOn: $notifyFinished)
+            Toggle("A limit reaches your warning level, or looks set to run out before it resets", isOn: $notifyLimits)
             if notifyLimits {
                 LabeledContent("Warn at") {
                     HStack(spacing: 4) {
@@ -214,7 +214,7 @@ struct SettingsView: View {
                 }
             }
         } header: { Text("Notify me when") } footer: {
-            Note("Limits count everyone signed in to the same Claude account. Each Mac with Agent Deck warns on its own, even when nobody is using Claude on it. Warn at takes any level from 1 to 99%. If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
+            Note("Everyone signed in to your Claude account shares these limits, so you can get a warning even when this Mac is quiet. Warn at takes 1 to 99%. If another app already tells you about sessions, turn off the first two so you don't get double alerts.")
         }
     }
 
@@ -235,7 +235,7 @@ struct SettingsView: View {
             if let st = model.storage {
                 StorageBar(parts: [("Conversations", st.conversations, .blue), ("Scratchpads", st.scratchpads, .purple), ("Undo backups", st.undoBackups, .teal)])
                 HStack {
-                    Text(st.orphans.isEmpty ? "No leftovers from deleted sessions"
+                    Text(st.orphans.isEmpty ? "No leftovers. Nice and tidy."
                          : "\(Fmt.count(st.orphans.count, "leftover")) from deleted sessions · \(Fmt.bytes(st.orphanBytes))")
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -246,7 +246,7 @@ struct SettingsView: View {
             }
             Toggle("Clean up leftovers automatically once a day", isOn: $autoCleanLeftovers)
         } header: { Text("Claude storage") } footer: {
-            Note("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
+            Note("Leftovers are files Claude Code kept for sessions that are gone, like scratchpads and undo backups. Anything touched in the last day stays. Cleaned files go to the Trash.")
         }
 
         Section {
@@ -264,7 +264,7 @@ struct SettingsView: View {
                 }
             }
         } header: { Text("Clean up now") } footer: {
-            Note("This frees space on your Mac. Sessions listed on claude.ai or in the phone app are kept on Anthropic's servers and aren't affected.")
+            Note("This frees space on your Mac. Sessions on claude.ai and in the phone app live on Anthropic's servers and stay as they are.")
         }
     }
 
@@ -272,12 +272,12 @@ struct SettingsView: View {
         Section {
             ForEach(Self.hookKeys, id: \.0) { key, title in healthRow(title, model.health?[key] as? String) }
             HStack {
-                if model.health?["error"] != nil { Text("Couldn't run the check (python3 missing?)").foregroundStyle(.orange) }
+                if model.health?["error"] != nil { Text("Couldn't run the check. Is python3 installed?").foregroundStyle(.orange) }
                 Spacer()
                 Button("Repair hooks") { Task { await model.repairHooks() } }
             }
         } header: { Text("Health") } footer: {
-            Note("Repair puts Agent Deck's hooks back without touching your own. A missing status line comes back by running install.sh again.")
+            Note("Repair puts Agent Deck's hooks back and leaves yours alone. If the status line is missing, run install.sh again.")
         }
 
         Section {
@@ -347,7 +347,7 @@ enum Preview: CaseIterable {
             PeekAlert(id: "preview", kind: .warn, title: "5-hour limit at \(Int(Notifier.warnAt))%",
                       meta: Fmt.resetsTitle(Date().addingTimeInterval(95 * 60)), percent: Notifier.warnAt)
         case .done:
-            PeekAlert(id: "preview", kind: .done, title: "my-app", meta: "Finished · took 12 min")
+            PeekAlert(id: "preview", kind: .done, title: "my-app", meta: "Done after 12 min")
         }
         Peek.close()
         _ = Peek.show(alert, percent: nil)

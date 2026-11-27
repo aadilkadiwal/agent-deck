@@ -58,6 +58,7 @@ final class AppModel {
     }
     var detailsOpen = false
     @ObservationIgnored var showDetails: ((DetailsTab) -> Void)?
+    @ObservationIgnored var showSettings: (() -> Void)?
     private(set) var menuHotkeyFailed = false
 
     let paths = ClaudePaths()
@@ -100,7 +101,7 @@ final class AppModel {
         samples = usageLog.load()
         Task { await checkNotifications() }
         if cli == nil {
-            banner = Banner(text: "Couldn't find the claude command. Install Claude Code, then reopen Agent Deck.", isError: true)
+            banner = Banner(text: "Can't find Claude Code. Install it, then open Agent Deck again.", isError: true)
         }
         // Open at login is on by default; after the first launch it's the user's choice in Settings.
         if !UserDefaults.standard.bool(forKey: "didSetLoginDefault") {
@@ -115,10 +116,14 @@ final class AppModel {
         notifier.peek = { [weak self] alert in
             // With the dropdown open the prompt is already there as a card: just the sound.
             if self?.menuOpen == true, alert.kind == .needs || alert.kind == .risky {
-                NSSound(named: alert.kind.sound)?.play()
+                if !alert.quiet { NSSound(named: alert.kind.sound)?.play() }
                 return true
             }
             return Peek.show(alert, percent: self?.shownPercent)
+        }
+        notifier.lastReply = { [weak self] sid in
+            guard let url = self?.history.first(where: { $0.sessionId == sid })?.fileURL else { return nil }
+            return await Task.detached { SessionDetail.lastReplyLine(url) }.value
         }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
@@ -133,7 +138,9 @@ final class AppModel {
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
             Task { @MainActor in await self?.refreshUsage() }
+            Task { @MainActor in self?.notifier.flushHeld() }
         }
+        notifier.askForFocusStatus()
         Task { await refresh(history: true, agents: true) }
     }
 
@@ -162,11 +169,11 @@ final class AppModel {
         let when = usage.map { " · updated \(Fmt.ago($0.updatedAt))" } ?? ""
         switch accountStatus {
         case .signedOut?: return "Not signed in to Claude Code"
-        case .expired?: return "Login expired · open Claude Code once"
-        case .rateLimited?: return "Anthropic asked to slow down · trying again in \(Int(accountBackoff / 60)) min"
-        case .failed?: return "Couldn't reach Anthropic · showing this Mac's last numbers" + when
+        case .expired?: return "Your login expired. Open Claude Code once to fix it."
+        case .rateLimited?: return "Anthropic asked us to slow down. Trying again in \(Int(accountBackoff / 60)) min."
+        case .failed?: return "Couldn't reach Anthropic, so these are this Mac's last numbers" + when
         case .ok?, nil:
-            guard usage != nil else { return "None yet · they arrive with your next Claude Code message" }
+            guard usage != nil else { return "None yet. They arrive with your next Claude Code message." }
             return (usageIsAccount ? "From Anthropic, for the whole account" : "From Claude Code on this Mac") + when
         }
     }
@@ -197,8 +204,8 @@ final class AppModel {
     var usageNote: String? {
         let h = lastHour
         guard h.others >= 1 else { return nil }
-        if h.mine == 0 { return "All of the last hour's use came from another Mac on this login" }
-        return "\(h.others >= h.mine ? "Most" : "Some") of the last hour's use came from another Mac on this login"
+        if h.mine == 0 { return "All of the last hour's use came from another Mac on your account" }
+        return "\(h.others >= h.mine ? "Most" : "Some") of the last hour's use came from another Mac on your account"
     }
 
     // The one that resets last is when work can go on. It counts as used up for a minute past its
@@ -319,13 +326,7 @@ final class AppModel {
             live = next
             activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
             updateRecentFolders()
-            let (blockers, br) = await Task.detached {
-                (Dictionary(next.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } },
-                            uniquingKeysWith: { a, _ in a }),
-                 Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a }))
-            }.value
-            if blockers != typingBlockers { typingBlockers = blockers }
-            if br != branches { branches = br }
+            lookUp(next)
         }
         let ctx = Dictionary(uniqueKeysWithValues: live.compactMap { s in
             ContextUsage.load(paths, sessionId: s.sessionId).map { (s.sessionId, $0) } })
@@ -334,6 +335,30 @@ final class AppModel {
         await refreshUsage()
         if forceHistory || Date().timeIntervalSince(lastHistoryScan) > 60 { await refreshHistory() }
         if Date().timeIntervalSince(lastRecentUse) > (live.contains { $0.state == .busy } ? 20 : 60) { await refreshRecentUse() }
+    }
+
+    @ObservationIgnored private var lookupNext: [LiveSession]?
+    @ObservationIgnored private var lookupRunning = false
+
+    // Reading a folder under Desktop or Documents blocks until macOS's access prompt is answered, so branches and
+    // window checks run beside the refresh instead of holding up sessions, usage and history. Only the newest list waits.
+    private func lookUp(_ sessions: [LiveSession]) {
+        lookupNext = sessions
+        guard !lookupRunning else { return }
+        lookupRunning = true
+        Task {
+            while let next = lookupNext {
+                lookupNext = nil
+                let (blockers, br) = await Task.detached {
+                    (Dictionary(next.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } },
+                                uniquingKeysWith: { a, _ in a }),
+                     Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a }))
+                }.value
+                if blockers != typingBlockers { typingBlockers = blockers }
+                if br != branches { branches = br }
+            }
+            lookupRunning = false
+        }
     }
 
     /// Limit warnings must not wait behind session work (a slow `claude agents`, a folder-access prompt),
@@ -472,7 +497,7 @@ final class AppModel {
 
     func stop(_ s: LiveSession) {
         if s.isLeftover {
-            perform(s.sessionId, success: "Cleared \(displayName(s)). Its history is still in Recent.") { try await $0.stop(s) }
+            perform(s.sessionId, success: "Removed \(displayName(s)). Its history is still in Recent.") { try await $0.stop(s) }
             return
         }
         perform(s.sessionId, success: "Stopped \(displayName(s)).", undo: { [weak self] in
@@ -492,12 +517,12 @@ final class AppModel {
     }
 
     func phoneOff(_ s: LiveSession) {
-        perform(s.sessionId, success: "\(displayName(s)) is off your phone. It's still running on your Mac.") { try await $0.setPhone(s, on: false) }
+        perform(s.sessionId, success: "\(displayName(s)) is off your phone and still running on your Mac.") { try await $0.setPhone(s, on: false) }
     }
 
     func clearContext(_ s: LiveSession) {
         let name = displayName(s)
-        perform(s.sessionId, success: "Cleared \(name)'s context.", undo: { [weak self] in
+        perform(s.sessionId, success: "\(name) is starting fresh.", undo: { [weak self] in
             guard let self, let now = self.live.first(where: { $0.pid == s.pid && $0.pid != nil }) else { return }
             self.perform(now.sessionId, success: "Brought back \(name)'s conversation.") { try await $0.resumeHere(now, id: s.sessionId) }
         }) { try await $0.clear(s) }
@@ -520,7 +545,7 @@ final class AppModel {
         do {
             try HistoryScanner.rename(h, to: name)
             banner = Banner(text: "Renamed to \(name).")
-        } catch { banner = Banner(text: "Couldn't rename: \(error.localizedDescription)", isError: true) }
+        } catch { banner = Banner(text: "Couldn't rename it. \(error.localizedDescription)", isError: true) }
         Task { await refreshHistory() }
     }
 
@@ -622,7 +647,7 @@ final class AppModel {
         do {
             try ClaudeSettings.setRetentionDays(days, paths)
             retentionDays = days
-            banner = Banner(text: "Claude Code will now keep sessions for \(days) days.")
+            banner = Banner(text: "Claude Code now keeps sessions for \(days) days.")
         } catch {
             banner = Banner(text: error.localizedDescription, isError: true)
         }
@@ -707,6 +732,9 @@ final class AppModel {
         Task { try? await Task.sleep(nanoseconds: 700_000_000); removeApproval(id) }
     }
 
+    /// Set by "New session…" in Dot's right-click menu; the dropdown opens on the new-session form.
+    @ObservationIgnored var startNewSession = false
+
     var pendingApprovals: [ApprovalRequest] { approvals.filter { outcomes[$0.id] == nil } }
 
     private func removeApproval(_ id: Int) {
@@ -730,7 +758,7 @@ final class AppModel {
     private func answerWithHotkey(allow: Bool) {
         guard let r = pendingApprovals.first(where: { $0.kind == .permission }) else { return }
         if allow, let risk = r.risk {
-            banner = Banner(text: "Not allowed by shortcut: this command \(risk). Click Allow once in the menu if you mean it.", isError: true)
+            banner = Banner(text: "That command \(risk), so it needs a click. Open the menu and choose Allow once.", isError: true)
             NSSound.beep()
             return
         }
@@ -786,8 +814,8 @@ final class AppModel {
 
     func repairHooks() async {
         let out = await Self.python(hookScript, "install")
-        banner = out == nil ? Banner(text: "Couldn't repair the hooks. Run install.sh again.", isError: true)
-                            : Banner(text: "Hooks repaired.")
+        banner = out == nil ? Banner(text: "Couldn't repair the hooks. Running install.sh again fixes it.", isError: true)
+                            : Banner(text: "Fixed. Prompts and usage work again.")
         await checkHealth()
     }
 
@@ -811,7 +839,7 @@ final class AppModel {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            banner = Banner(text: "Couldn't change Open at login: \(error.localizedDescription)", isError: true)
+            banner = Banner(text: "Couldn't change Open at login. \(error.localizedDescription)", isError: true)
         }
         opensAtLogin = SMAppService.mainApp.status == .enabled
     }

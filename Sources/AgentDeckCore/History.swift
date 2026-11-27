@@ -175,6 +175,17 @@ public struct SessionDetail: Equatable, Sendable {
         return parse(data)
     }
 
+    /// The first line of Claude's latest reply. Only the end of the transcript is read, so long sessions stay quick.
+    public static func lastReplyLine(_ url: URL, tail: UInt64 = 512 * 1024) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > tail ? size - tail : 0)
+        guard let reply = parse(h.readDataToEndOfFile()).lastReply else { return nil }
+        let line = reply.split(separator: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " #*`>-")) }.first { !$0.isEmpty } ?? ""
+        return line.isEmpty ? nil : line.count > 140 ? String(line.prefix(139)) + "…" : line
+    }
+
     static func parse(_ data: Data, since: Date? = nil) -> SessionDetail {
         var d = SessionDetail()
         var seen = Set<String>()

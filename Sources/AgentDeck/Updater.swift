@@ -17,14 +17,14 @@ final class Updater: ObservableObject {
 
     func check() {
         guard let src = source, FileManager.default.fileExists(atPath: src + "/.git") else {
-            status = "Installed from a folder without git; re-run install.sh to update."
+            status = "This copy wasn't installed with git. Run install.sh again to update."
             return
         }
         busy = true
         Task {
             defer { busy = false }
             guard (try? await Self.git(src, "rev-parse", "--abbrev-ref", "@{u}")) != nil else {
-                status = "Up to date with your local copy (not published to GitHub yet)."
+                status = "You're up to date."
                 return
             }
             _ = try? await Self.git(src, "fetch", "--quiet")
@@ -43,11 +43,11 @@ final class Updater: ObservableObject {
         Task {
             // A pull into a checkout with local edits could fail halfway or build something unexpected.
             if let dirty = try? await Self.git(src, "status", "--porcelain"), !dirty.isEmpty {
-                status = "Your source folder has uncommitted changes. Commit or stash them, then update."
+                status = "Your source folder has changes that aren't committed. Commit or stash them, then update."
                 busy = false
                 return
             }
-            status = "Updating… Agent Deck will restart."
+            status = "Updating. Agent Deck restarts when it's done."
             do {
                 _ = try await Self.git(src, "pull", "--ff-only", "--quiet")
                 let p = Process()
@@ -64,7 +64,7 @@ final class Updater: ObservableObject {
                 }
                 try p.run()
             } catch {
-                status = "Update failed: \(error.localizedDescription)"
+                status = "The update didn't work. \(error.localizedDescription)"
                 busy = false
             }
         }

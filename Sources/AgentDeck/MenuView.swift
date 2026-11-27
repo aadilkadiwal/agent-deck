@@ -6,6 +6,8 @@ struct MenuView: View {
     let model: AppModel
     @State private var confirm: Confirm?
     @State private var showingNew = false
+    @State private var tab = ListTab.running
+    @State private var tabMinHeight: CGFloat = 0
     @State private var search = ""
     @State private var searchAsked = false
     @State private var collapsed = Set<String>()
@@ -40,6 +42,12 @@ struct MenuView: View {
     }
 
     enum Item: Hashable { case card(Int), live(String), closed(String) }
+    enum ListTab: Hashable { case running, recent }
+
+    // Searching and filtering look across both lists, so the switch only shows when neither is on.
+    private var tabsShown: Bool { !searching && only == nil }
+    private var showsRunning: Bool { !tabsShown || tab == .running }
+    private var showsRecent: Bool { searching || (tabsShown && tab == .recent) }
 
     private var searching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
     private var showSearch: Bool { model.live.count > 5 || searchAsked || searching }
@@ -60,10 +68,9 @@ struct MenuView: View {
         }
     }
     private var closed: [HistorySession] {
-        guard only == nil else { return [] }
-        // Searching looks through all saved sessions; otherwise show the last five.
+        guard showsRecent else { return [] }
         return searching ? Array(model.closed.filter { matches($0.name, $0.cwd, $0.sessionId, $0.lastPrompt ?? "") }.prefix(15))
-                         : Array(model.closed.prefix(5))
+                         : Array(model.closed.prefix(15))
     }
     private func grouped(_ running: [LiveSession]) -> Bool { running.count > 5 && !searching && only == nil }
     // Not narrowed by search, so typing never makes waiting sessions look answered.
@@ -91,7 +98,7 @@ struct MenuView: View {
             : running
         return cards.filter { model.outcomes[$0.id] == nil }.map { .card($0.id) }
             + waitingRows.map { .live($0.sessionId) }
-            + live.map { .live($0.sessionId) }
+            + (showsRunning ? live.map { .live($0.sessionId) } : [])
             + closed.map { .closed($0.sessionId) }
     }
 
@@ -127,7 +134,9 @@ struct MenuView: View {
             .animation(Motion.spring(reduced: reduceMotion), value: only)
             .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, 4)
             .frame(width: 370)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { totalHeight = $0 }
+            // Rows leaving with a transition still count when the size is first measured, so the panel
+            // also re-fits once the content's height settles (a filter used to leave empty space below).
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { totalHeight = $0; StatusMenu.fit() }
             .overlay(alignment: .top) {
                 if actionsOpen, let cursor {
                     ZStack(alignment: .top) {
@@ -170,6 +179,10 @@ struct MenuView: View {
                     .keyboardShortcut("k").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 Button("") { settings() }
                     .keyboardShortcut(",").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { tab = .running }
+                    .keyboardShortcut("1").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { tab = .recent }
+                    .keyboardShortcut("2").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 // ⌘⌫ is a key equivalent, so onKeyPress never sees it. In a text field it keeps its usual job.
                 Button("") {
                     if typing { NSApp.sendAction(#selector(NSResponder.deleteToBeginningOfLine(_:)), to: nil, from: nil); return }
@@ -180,13 +193,15 @@ struct MenuView: View {
             }
             .onAppear {
                 model.menuOpen = true
+                tab = model.live.contains { !$0.isLeftover } ? .running : .recent
+                if model.startNewSession { showingNew = true; model.startNewSession = false }
                 listFocused = true
                 // Same card ⌃⌥A answers, so the outline and the hotkey hint agree.
                 let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
                 if let id = hotkeyTarget ?? model.pendingApprovals.last?.id { cursor = .card(id) }
             }
             .onDisappear {
-                model.menuOpen = false; search = ""; searchAsked = false; confirm = nil; showingNew = false
+                model.menuOpen = false; search = ""; searchAsked = false; confirm = nil; showingNew = false; tabMinHeight = 0
                 only = nil; previewing = nil; cursor = nil; actionsOpen = false; allClear = false; hoveredRow = nil
             }
             .onChange(of: urgent) { was, now in
@@ -220,7 +235,7 @@ struct MenuView: View {
             guard let r = model.approvals.first(where: { $0.id == id }) else { return .ignored }
             if !command { model.openSession(id: r.sessionId) }
             else if r.kind == .permission, let risk = r.risk {
-                model.banner = Banner(text: "This command \(risk), so ⌘⏎ doesn't allow it. Click Allow once if you mean it.", isError: true)
+                model.banner = Banner(text: "This one \(risk). Click Allow once if you're sure.", isError: true)
             }
             else if r.kind == .permission { model.answer(id, .allow(always: false)) }
             else if r.kind == .plan { model.approvePlan(r, acceptEdits: false) }
@@ -257,8 +272,8 @@ struct MenuView: View {
     @ViewBuilder private var healthBanner: some View {
         let missing = model.missingHooks
         if !missing.isEmpty {
-            let text = missing.contains("claude") ? "Prompts can't be answered here until setup is repaired"
-                : "Usage and context won't update until setup is repaired"
+            let text = missing.contains("claude") ? "Prompts won't show up here until you repair setup"
+                : "Usage and context won't update until you repair setup"
             Callout(tint: .orange, outlined: true) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -276,7 +291,7 @@ struct MenuView: View {
         return HStack(spacing: 10) {
             Dot(mood: allClear ? .done : model.mood(for: model.closestWindow), percent: model.shownPercent, size: 36, celebrate: false)
                 .onTapGesture { showDetails(tab: .usage) }
-                .help("Its rim is your closest usage limit. Click for usage details.")
+                .help("Dot's rim is your closest limit. Click for usage details.")
             VStack(alignment: .leading, spacing: 1) {
                 if urgent {
                     Text("\(Fmt.count(waiting, waitingRows.isEmpty ? "prompt" : "session")) waiting").font(.body.weight(.semibold))
@@ -291,8 +306,8 @@ struct MenuView: View {
                 } else {
                     counts(otherwise: "No sessions running").font(.body.weight(.semibold))
                     Group {
-                        if only != nil { Text("esc shows all") }
-                        else if allClear { Text("All clear · nothing needs you").foregroundStyle(.green) }
+                        if only != nil { Text("Esc shows everything") }
+                        else if allClear { Text("All clear").foregroundStyle(.green) }
                         else { Text("Nothing needs you") }
                     }
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -360,7 +375,7 @@ struct MenuView: View {
                     }
                     ForEach(waitingRows) { s in liveRow(s) }
                     if cards.isEmpty && waitingRows.isEmpty {
-                        Text("No waiting session matches.").font(.callout).foregroundStyle(.secondary)
+                        Text("Nothing waiting matches.").font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(8)
                     }
                 }
@@ -390,10 +405,10 @@ struct MenuView: View {
             .buttonStyle(PressableStyle())
             .onHover { usageHover = $0 }
             .animation(Motion.fast(reduceMotion), value: usageHover)
-            .help(stale ? "Agent Deck couldn't reach Anthropic; these update with your next Claude Code message."
+            .help(stale ? "Couldn't reach Anthropic. These update with your next Claude Code message."
                   : "\(model.usageIsAccount ? "Whole account, every Mac on this login" : u.model ?? "Usage") · updated \(Fmt.ago(u.updatedAt)). Click for details.")
             if stale {
-                Text("Updated \(Fmt.ago(u.updatedAt)) · refreshes with your next message")
+                Text("Updated \(Fmt.ago(u.updatedAt)). It refreshes with your next message.")
                     .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal, 8)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -403,11 +418,11 @@ struct MenuView: View {
                let w = [u.fiveHour, u.weekly].compactMap({ $0 }).first(where: { if case .reachesLimit(let at) = model.forecast($0), at > Date() { true } else { false } }),
                case .reachesLimit(let at) = model.forecast(w), !model.switchCandidates.isEmpty {
                 Callout(tint: .orange) {
-                    Text("\(w.label) runs out at \(Fmt.clock(at)). Sonnet uses less of it.").fixedSize(horizontal: false, vertical: true)
+                    Text("You'll hit the \(w.label.lowercased()) limit around \(Fmt.clock(at)). Sonnet uses less of it.").fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     Button("Switch \(Fmt.count(model.switchCandidates.count, "idle session"))") { model.switchToSonnet() }
                         .controlSize(.small)
-                        .help("Types /model sonnet into idle Opus sessions in iTerm")
+                        .help("Switches idle Opus sessions to Sonnet by typing /model sonnet")
                 }
                 .font(.subheadline).padding(.top, 6)
             }
@@ -416,7 +431,7 @@ struct MenuView: View {
                 Button {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")")!)
                 } label: {
-                    Label("Notifications are off, so limit warnings won't show. Turn on", systemImage: "bell.slash")
+                    Label("Notifications are off, so you won't hear about limits. Turn them on", systemImage: "bell.slash")
                         .font(.subheadline).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain).padding(.horizontal, 8).padding(.top, 6)
@@ -424,7 +439,7 @@ struct MenuView: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Usage limits").font(.body.weight(.semibold))
-                Text("They appear within a few minutes once you're signed in to Claude Code, or after your next Claude Code message.")
+                Text("Your limits show up after your next Claude Code message.")
                     .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(8)
         }
@@ -436,7 +451,7 @@ struct MenuView: View {
             let at = hit.resetsAt.map(Fmt.clock) ?? "the reset"
             let queued = stopped.allSatisfy { model.continueQueue.contains($0.sessionId) }
             Callout(tint: .secondary) {
-                Text("\(Fmt.count(stopped.count, "session")) stopped at the limit. Agent Deck can type \"continue\" when it resets.")
+                Text("\(Fmt.count(stopped.count, "session")) stopped at the limit. Pick them up again when it resets?")
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 Button {
@@ -446,7 +461,7 @@ struct MenuView: View {
                         .fixedSize()
                 }
                 .controlSize(.small)
-                .help(queued ? "Click to cancel" : "Agent Deck types \"continue\" into each of them as soon as the limit resets")
+                .help(queued ? "Click to cancel" : "Types \"continue\" into each of them the moment the limit resets")
             }
             .font(.subheadline).padding(.top, 6)
         }
@@ -473,12 +488,44 @@ struct MenuView: View {
                     .onKeyPress(.downArrow) { cursor = nil; listFocused = true; return .ignored }
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            if tabsShown {
+                Picker("", selection: $tab) {
+                    Text("Running \(running.count)").tag(ListTab.running)
+                    Text("Recent").tag(ListTab.recent)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .padding(.horizontal, 8).padding(.bottom, 4)
+                .help("⌘1 Running · ⌘2 Recent")
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    SectionHeader(title: "\(only.map(stateTitle) ?? "RUNNING") · \(running.count)", trailing: only == nil ? nil : "esc shows all")
+                    if showsRunning { runningList(running, grouped: isGrouped) }
+                    if showsRecent { recentList(closed) }
+                }
+                .animation(Motion.spring(reduced: reduceMotion), value: running.map(\.id))
+                .animation(Motion.spring(reduced: reduceMotion), value: closed.map(\.id))
+                .animation(Motion.spring(reduced: reduceMotion), value: confirm)
+                .animation(Motion.spring(reduced: reduceMotion), value: previewing)
+            }
+            .frame(maxHeight: heights.sessions)
+            .fixedSize(horizontal: false, vertical: true)
+            // Switching tabs keeps the height the list had, so the panel doesn't jump; a taller tab still grows it.
+            .frame(minHeight: tabMinHeight > 0 ? min(tabMinHeight, heights.sessions) : nil, alignment: .top)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sessionsHeight = $0 }
+            .onDisappear { sessionsHeight = 0 }
+        }
+        .animation(Motion.spring(reduced: reduceMotion), value: showSearch)
+        .onChange(of: tab) { tabMinHeight = sessionsHeight; cursor = nil }
+        .onChange(of: tabsShown) { tabMinHeight = 0 }
+    }
+
+    @ViewBuilder private func runningList(_ running: [LiveSession], grouped isGrouped: Bool) -> some View {
+                    if !tabsShown {
+                        SectionHeader(title: "\(only.map(stateTitle) ?? "RUNNING") · \(running.count)", trailing: only == nil ? nil : "Esc shows everything")
+                    }
                     if running.isEmpty {
                         HStack {
-                            Text(searching ? "No running session matches." : only != nil ? "None right now." : "No Claude Code sessions running.")
+                            Text(searching ? "No running session matches." : only != nil ? "None right now." : "Nothing running right now.")
                                 .font(.callout).foregroundStyle(.secondary)
                             Spacer()
                             if !searching && only == nil && model.live.isEmpty { Button("New session…") { showingNew = true }.controlSize(.small) }
@@ -490,25 +537,22 @@ struct MenuView: View {
                     } else {
                         ForEach(running) { s in liveRow(s).transition(.opacity.combined(with: .move(edge: .top))) }
                     }
+    }
 
-                    if !closed.isEmpty {
-                        SectionHeader(title: searching ? "CLOSED · MATCHES" : "RECENT · CLOSED").padding(.top, 8)
-                        ForEach(closed) { h in closedRowWithConfirm(h).transition(.opacity) }
-                    } else if searching {
-                        Text("No closed session matches.").font(.callout).foregroundStyle(.secondary).padding(8)
-                    }
+    @ViewBuilder private func recentList(_ closed: [HistorySession]) -> some View {
+        if searching { SectionHeader(title: "CLOSED · MATCHES").padding(.top, 8) }
+        if closed.isEmpty {
+            Text(searching ? "No closed session matches." : "No closed sessions yet.").font(.callout).foregroundStyle(.secondary).padding(8)
+        } else {
+            ForEach(closed) { h in closedRowWithConfirm(h).transition(.opacity) }
+            if !searching && model.closed.count > closed.count {
+                Button { showDetails(tab: .sessions) } label: {
+                    Text("All \(model.closed.count) in Details ›").font(.subheadline).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
                 }
-                .animation(Motion.spring(reduced: reduceMotion), value: running.map(\.id))
-                .animation(Motion.spring(reduced: reduceMotion), value: closed.map(\.id))
-                .animation(Motion.spring(reduced: reduceMotion), value: confirm)
-                .animation(Motion.spring(reduced: reduceMotion), value: previewing)
+                .buttonStyle(.plain)
             }
-            .frame(maxHeight: heights.sessions)
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sessionsHeight = $0 }
-            .onDisappear { sessionsHeight = 0 }
         }
-        .animation(Motion.spring(reduced: reduceMotion), value: showSearch)
     }
 
     private func stateTitle(_ s: LiveSession.State) -> String {
@@ -528,7 +572,7 @@ struct MenuView: View {
                 Text(g.name).font(.callout.weight(.semibold))
                 if g.sessions.contains(where: { $0.state == .blocked }) {
                     Image(systemName: "exclamationmark.circle.fill").font(.system(size: 10)).foregroundStyle(.orange)
-                        .help("A session here is waiting for you")
+                        .help("Something here needs you")
                 }
                 Spacer()
                 Text("\(g.sessions.count)").font(.subheadline).foregroundStyle(.secondary)
@@ -562,7 +606,7 @@ struct MenuView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(highlighted(model.displayName(s), search)).font(.body.weight(waiting ? .semibold : .medium)).lineLimit(1)
-                        if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(Color.accentColor).help("On your phone") }
+                        if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(.secondary).help("On your phone") }
                         if s.kind == .background { Pill(text: "Background").help("Background session: it runs without a terminal window") }
                     }
                     if model.isStoppedAtLimit(s) {
@@ -635,8 +679,8 @@ struct MenuView: View {
     }
 
     private func blocker(_ s: LiveSession, _ verb: String) -> String? {
-        if s.kind == .background { return "It has no window to \(verb)." }
-        return model.typingBlockers[s.sessionId] ?? (s.state == .busy ? "Available when it's idle. It's working on a reply." : nil)
+        if s.kind == .background { return "It runs without a window, so there's nothing to \(verb)." }
+        return model.typingBlockers[s.sessionId] ?? (s.state == .busy ? "Wait until it finishes its reply." : nil)
     }
 
     private func rowKey(_ key: String, command: Bool = false) -> KeyPress.Result {
@@ -648,7 +692,7 @@ struct MenuView: View {
         case "k": if let why = blocker(s, "clear") { unavailable(why) } else { askClear(s) }
         case "c": if let why = blocker(s, "compact") { unavailable(why) } else { askCompact(s) }
         case "r":
-            if s.kind == .background { unavailable("It has no window to rename it in.") }
+            if s.kind == .background { unavailable("It runs without a window, so it can't be renamed here.") }
             else if let why = model.typingBlockers[sid] { unavailable(why) } else { confirm = .renameLive(s) }
         case "\u{7F}" where command: confirm = .stop(s)
         default: return .ignored
@@ -664,12 +708,12 @@ struct MenuView: View {
             let percent = model.context[s.sessionId]?.percent ?? 0
             IconButton(symbol: "arrow.down.right.and.arrow.up.left",
                        tint: percent >= ContextBar.warnAt && why == nil ? ContextBar.tint(percent) : nil,
-                       help: why ?? "Compact (/compact): Claude keeps a summary and frees context. Clear is in the right-click menu.",
+                       help: why ?? "Compact the conversation to free up context. Clear is in the right-click menu.",
                        dimmed: why != nil) { askCompact(s) }
         }
         Color.clear.frame(width: 8, height: 1)
         IconButton(symbol: s.isLeftover ? "xmark" : "stop.fill",
-                   help: s.isLeftover ? "Clear this old entry (history is kept)" : "Stop session") {
+                   help: s.isLeftover ? "Remove this ended session (its history stays)" : "Stop session") {
             if s.state == .idle && !s.isLeftover { model.stop(s) } else { confirm = .stop(s) }
         }
     }
@@ -722,11 +766,11 @@ struct MenuView: View {
 
     private func phoneHelp(_ s: LiveSession) -> String {
         switch (s.isOnPhone, s.kind) {
-        case (false, .interactive): return "Also open on your phone (keeps running here)"
-        case (true, .interactive): return "On your phone. Click to disconnect the phone; it keeps running here."
+        case (false, .interactive): return "Open it on your phone too. It keeps running here."
+        case (true, .interactive): return "On your phone. Click to disconnect the phone. It keeps running here."
         case (false, .background): return s.isLeftover ? "Reopen it in iTerm and on your phone"
                                                        : "Open in iTerm and on your phone"
-        case (true, .background): return "On your phone only. Click to stop it."
+        case (true, .background): return "Only on your phone. Click to stop it."
         }
     }
 
@@ -734,23 +778,23 @@ struct MenuView: View {
         Group {
             switch c {
             case .stop(let s):
-                ConfirmRow(message: s.isLeftover ? "It isn't running, it's an old entry. Clear it? Its history stays."
-                                    : s.state == .blocked ? "It's waiting for an answer. Stop it?"
+                ConfirmRow(message: s.isLeftover ? "This session already ended. Remove it from the list? Its history stays."
+                                    : s.state == .blocked ? "It's waiting for your answer. Stop it anyway?"
                                     : s.kind == .background && s.isOnPhone ? "It runs only on your phone. Stop it?"
-                                    : s.isOnPhone ? "Stop it? It also leaves your phone." : "Stop this session?",
+                                    : s.isOnPhone ? "Stop it? It closes on your phone too." : "Stop this session?",
                            confirmTitle: s.isLeftover ? "Clear" : "Stop", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
             case .stopIdle:
                 let idle = model.live.filter { $0.state == .idle && !$0.isLeftover }
-                ConfirmRow(message: "Stop \(Fmt.count(idle.count, "idle session"))? Each can be resumed from Recent.",
+                ConfirmRow(message: "Stop \(Fmt.count(idle.count, "idle session"))? You can resume any of them from Recent.",
                            confirmTitle: "Stop all", destructive: true, cancel: { confirm = nil }) { confirm = nil; idle.forEach(model.stop) }
             case .compact(let s):
-                ConfirmRow(message: "Compact its context? Claude keeps a summary and drops the details. The full conversation stays in its transcript.",
+                ConfirmRow(message: "Compact this conversation? Claude keeps a summary and lets go of the details. Nothing is deleted.",
                            confirmTitle: "Compact", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.compact(s) }
             case .clearContext(let s):
-                ConfirmRow(message: "Clear its context? It starts fresh in the same window. Undo brings this conversation back.",
+                ConfirmRow(message: "Start fresh in the same window? You can undo it.",
                            confirmTitle: "Clear", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.clearContext(s) }
             case .openWithPhone(let s):
-                ConfirmRow(message: "It has no window. Open it in iTerm with phone access on?",
+                ConfirmRow(message: "It runs without a window. Open it in iTerm and on your phone?",
                            confirmTitle: "Open", cancel: { confirm = nil }) { confirm = nil; model.phoneOn(s) }
             case .renameLive(let s):
                 HStack(spacing: 8) {
@@ -820,7 +864,7 @@ struct MenuView: View {
             switch r.kind {
             case .permission:
                 if let risk = r.risk {
-                    list.append(DeckAction(title: "Allow once", detail: "Risky: this command \(risk)") { model.answer(id, .allow(always: false)) })
+                    list.append(DeckAction(title: "Allow once", detail: "Careful: this one \(risk)") { model.answer(id, .allow(always: false)) })
                 } else {
                     list.append(DeckAction(title: "Allow", key: "⌘⏎") { model.answer(id, .allow(always: false)) })
                     if let rule = r.alwaysLabel {
@@ -834,25 +878,25 @@ struct MenuView: View {
             case .question:
                 break
             }
-            list.append(DeckAction(title: "Show in the terminal", key: "⏎") { model.openSession(id: r.sessionId) })
+            list.append(DeckAction(title: "Answer in the terminal", key: "⏎") { model.openSession(id: r.sessionId) })
             return list
         case .live(let sid):
             guard let s = model.live.first(where: { $0.sessionId == sid }) else { return [] }
             let open = DeckAction(title: s.kind == .interactive ? "Show its window" : "Open in iTerm", key: "⏎") { model.open(s) }
-            let working = model.working.contains(sid) ? "Busy with the last action. Try again in a moment." : nil
+            let working = model.working.contains(sid) ? "Still doing the last thing. Try again in a moment." : nil
             let typing = model.typingBlockers[sid]
             var list = [open]
             if !s.isLeftover {
-                list.append(DeckAction(title: "Compact context", detail: "Claude keeps a summary and frees context", key: "C",
+                list.append(DeckAction(title: "Compact context", detail: "Frees up context. Claude keeps a summary.", key: "C",
                                        unavailable: working ?? blocker(s, "compact")) { askCompact(s) })
                 list.append(DeckAction(title: phoneTitle(s), key: "P", unavailable: working ?? typing) { togglePhone(s) })
                 list.append(DeckAction(title: "Rename…", key: "R",
-                                       unavailable: working ?? (s.kind == .background ? "It has no window to rename it in." : typing)) { confirm = .renameLive(s) })
+                                       unavailable: working ?? (s.kind == .background ? "It runs without a window, so it can't be renamed here." : typing)) { confirm = .renameLive(s) })
                 list.append(DeckAction(title: "Clear context…", key: "K", unavailable: working ?? blocker(s, "clear")) { askClear(s) })
             }
             if let url = s.phoneURL { list.append(DeckAction(title: "Copy phone link") { copy(url.absoluteString) }) }
             list.append(DeckAction(title: "Copy session ID") { copy(s.sessionId) })
-            list.append(DeckAction(title: s.isLeftover ? "Clear old entry…" : "Stop session…", key: "⌘⌫", destructive: true,
+            list.append(DeckAction(title: s.isLeftover ? "Remove from list…" : "Stop session…", key: "⌘⌫", destructive: true,
                                    unavailable: working) { confirm = .stop(s) })
             return list
         case .closed(let sid):
@@ -946,7 +990,7 @@ struct NewSessionPanel: View {
             FlowChips(items: model.recentFolders, selected: $folder)
             Button("Browse…") { browse() }.controlSize(.small)
             if let folder { Text(Fmt.shortPath(folder)).font(.subheadline).foregroundStyle(.secondary) }
-            Text("NAME (optional)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Name (optional)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             TextField("e.g. fix-login", text: $name).textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
@@ -955,7 +999,7 @@ struct NewSessionPanel: View {
                     .buttonStyle(.borderedProminent)
             }
             .disabled(folder == nil || model.working.contains("new"))
-            Text("Start for phone opens no window. The session shows up in the Claude app within a few seconds.")
+            Text("Start for phone opens no window here. The session shows up in the Claude app a few seconds later.")
                 .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(8)
@@ -1059,7 +1103,7 @@ struct DeleteConfirm: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(title).fixedSize(horizontal: false, vertical: true)
-                    .help("Conversation, scratchpad, undo backups and other files Claude Code keeps for this session")
+                    .help("The conversation, scratchpad, undo backups and anything else Claude Code keeps for this session")
                 Spacer()
                 Button("Cancel", action: onDone)
                 Button(picked.isEmpty ? "Delete" : "Delete + \(Fmt.count(picked.count, "file"))", role: .destructive) {
@@ -1071,7 +1115,7 @@ struct DeleteConfirm: View {
                 DisclosureGroup(isExpanded: $showFiles) {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(files) { fileRow($0) }
-                        Text("Only files Claude made with its Write tool are listed. Nothing here is deleted unless you tick it.")
+                        Text("These are files Claude created with its Write tool. Only the ones you tick are deleted.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                     .padding(.top, 2)
@@ -1235,7 +1279,7 @@ struct WelcomeCard: View {
                         menuHotkey = MenuHotkey.ctrlOptO.rawValue
                         model.setMenuHotkey(.ctrlOptO)
                     }
-                    .help("Opens this menu from any app. You can change or turn it off in Settings → Shortcuts.")
+                    .help("Opens this menu from any app. Change it or turn it off in Settings → Shortcuts.")
                 }
                 Spacer()
                 Button("Got it", action: done).buttonStyle(.borderedProminent)
@@ -1252,11 +1296,11 @@ struct WelcomeCard: View {
         if model.health == nil {
             Label("Checking setup…", systemImage: "hourglass").foregroundStyle(.secondary)
         } else if model.missingHooks.isEmpty && model.health?["error"] == nil {
-            Label("Setup works: prompts can be answered here", systemImage: "checkmark.circle.fill")
+            Label("All set. You can answer prompts from here.", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         } else {
             HStack(spacing: 8) {
-                Label("Setup needs a repair before prompts show here.", systemImage: "exclamationmark.triangle.fill")
+                Label("Setup needs a repair before prompts can show up here.", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 Button("Repair") { Task { await model.repairHooks() } }.controlSize(.small)
             }

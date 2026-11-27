@@ -232,7 +232,7 @@ struct ActivityLine: View {
     }
 
     static func stateText(_ s: LiveSession) -> String {
-        if s.isLeftover { return "not running · old entry" }
+        if s.isLeftover { return "ended" }
         switch s.state {
         case .busy: return "working"
         case .idle: return "idle"
@@ -307,7 +307,7 @@ struct LastHourBar: View {
             model.live.first { $0.sessionId == id }.map { Part(id: id, name: model.displayName($0), points: h.mine * Double(n) / sum, color: SessionColor.of(id)) }
         }
         if parts.isEmpty && h.mine > 0 { parts = [Part(id: "mac", name: "This Mac", points: h.mine, color: .teal)] }
-        if h.others > 0 { parts.append(Part(id: "others", name: "Other Macs on this login", points: h.others, color: Color.secondary.opacity(0.6))) }
+        if h.others > 0 { parts.append(Part(id: "others", name: "Other Macs on your account", points: h.others, color: Color.secondary.opacity(0.6))) }
         return parts.filter { $0.points > 0 }
     }
 
@@ -373,7 +373,7 @@ struct LimitStopLine: View {
         let at = model.limitHit?.resetsAt.map(Fmt.clock)
         let blocker = model.typingBlockers[session.sessionId]
         VStack(alignment: .leading, spacing: 3) {
-            Text("Hit the usage limit").foregroundStyle(.orange).lineLimit(1)
+            Text("Stopped at the limit").foregroundStyle(.orange).lineLimit(1)
             Button {
                 model.toggleContinue(session)
             } label: {
@@ -386,7 +386,7 @@ struct LimitStopLine: View {
             .buttonStyle(.plain)
             .foregroundStyle(Color.accentColor)
             .disabled(blocker != nil)
-            .help(blocker ?? (queued ? "Click to cancel" : "Agent Deck types \"continue\" into it as soon as the limit resets"))
+            .help(blocker ?? (queued ? "Click to cancel" : "Types \"continue\" into it the moment the limit resets"))
         }
         .font(.subheadline)
     }

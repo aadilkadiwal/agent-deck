@@ -12,7 +12,7 @@ public struct SessionWindow: Sendable {
         public var errorDescription: String? {
             switch self {
             case .unsupportedHost:
-                return "This session isn't running in iTerm, so Agent Deck can't type into it. Type the command in it yourself."
+                return "This session isn't in iTerm, so Agent Deck can't type into it. Type the command there yourself."
             case .notFound: return "Couldn't find this session's window."
             case .notAllowed:
                 return "Agent Deck isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."

@@ -38,6 +38,7 @@ struct BarLabel: View {
     let model: AppModel
     @AppStorage("barStyle") private var barStyle = BarStyle.closest.rawValue
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         let five = model.usage?.fiveHour?.percent()
@@ -51,11 +52,13 @@ struct BarLabel: View {
         let tail: String = if let back { " · back \(Fmt.clock(back))" } else if let out { " · out \(Fmt.clock(out))" } else { "" }
         let limit = pct + tail
         let mood = model.mood(for: shown)
+        // Below 50% (or the warning level, if lower) the number says nothing Dot's rim doesn't.
+        let low = (shown?.percent() ?? 0) < min(50, Notifier.warnAt) && out == nil && back == nil
         HStack(spacing: 4) {
-            Dot(mood: mood, percent: shown?.percent(), size: 18, extras: mood == .needs || mood == .risky, fps: 15)
+            Dot(mood: mood, percent: shown?.percent(), size: 18, extras: mood == .needs || mood == .risky, fps: 15, still: true)
             switch style {
-            case .closest: Text(limit)
-            case .withSessions: Text("\(limit) · \(model.live.count)")
+            case .closest: if !low { Text(limit) }
+            case .withSessions: Text(low ? "\(model.live.count)" : "\(limit) · \(model.live.count)")
             case .ringOnly: EmptyView()
             }
         }
@@ -69,6 +72,11 @@ struct BarLabel: View {
                 StatusMenu.close()
                 UserDefaults.standard.set(tab.rawValue, forKey: "detailsTab")
                 openWindow(id: "details")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            model.showSettings = { [openSettings] in
+                StatusMenu.close()
+                openSettings()
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
@@ -91,6 +99,8 @@ enum StatusMenu {
         guard let button = item.button else { return }
         button.target = StatusTarget.shared
         button.action = #selector(StatusTarget.click)
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        StatusTarget.shared.model = model
         let label = Host(rootView: BarLabel(model: model))
         label.passesClicks = true
         label.onResize = { [weak label] in
@@ -107,6 +117,13 @@ enum StatusMenu {
         self.item = item
         self.label = label
         self.content = content
+    }
+
+    static func popUp(_ menu: NSMenu) {
+        guard let item, let button = item.button else { return }
+        item.menu = menu
+        button.performClick(nil)
+        item.menu = nil
     }
 
     static func describe(_ summary: String) {
@@ -169,6 +186,8 @@ enum StatusMenu {
         item?.button?.highlight(false)
     }
 
+    static func fit() { DispatchQueue.main.async { place() } }
+
     private static func place() {
         guard let panel, let content, content.superview != nil, let button = item?.button, let bar = button.window,
               let screen = bar.screen ?? NSScreen.main else { return }
@@ -201,9 +220,49 @@ enum StatusMenu {
     }
 }
 
+@MainActor
 private final class StatusTarget: NSObject {
     static let shared = StatusTarget()
-    @MainActor @objc func click() { StatusMenu.toggle() }
+    weak var model: AppModel?
+    /// Menu items only hold their targets weakly, so the open menu keeps them alive here.
+    private var menu: NSMenu?
+
+    @objc func click() {
+        let e = NSApp.currentEvent
+        if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true { showMenu() } else { StatusMenu.toggle() }
+    }
+
+    private func showMenu() {
+        StatusMenu.close()
+        let menu = NSMenu()
+        if let until = Notifier.snoozedUntil {
+            menu.addItem(item("Alerts are off until \(Fmt.clock(until)). Turn them back on") { Notifier.snooze(for: nil) })
+        } else {
+            menu.addItem(item("Snooze alerts for 1 hour") { Notifier.snooze(for: 3600) })
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("New session…") { [weak self] in self?.model?.startNewSession = true; StatusMenu.open() })
+        menu.addItem(item("Details…") { [weak self] in self?.model?.showDetails?(.sessions) })
+        menu.addItem(item("Settings…") { [weak self] in self?.model?.showSettings?() })
+        menu.addItem(.separator())
+        menu.addItem(item("Quit Agent Deck") { NSApp.terminate(nil) })
+        self.menu = menu
+        StatusMenu.popUp(menu)
+    }
+
+    private func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: "")
+        let action = MenuAction(run)
+        i.target = action
+        i.representedObject = action
+        return i
+    }
+}
+
+private final class MenuAction: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
 }
 
 /// Borderless panels can't become key by default; the dropdown needs keyboard focus.

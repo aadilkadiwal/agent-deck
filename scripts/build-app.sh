@@ -14,8 +14,14 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp scripts/hook.py "$APP/Contents/Resources/hook.py"   # Settings → Health repairs hooks with it
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"   # Dot; notifications carry it too
 # macOS plays custom notification sounds only from the app bundle
-cp /System/Library/Sounds/{Glass,Sosumi,Pop}.aiff "$APP/Contents/Resources/"
+cp Resources/Sounds/*.wav "$APP/Contents/Resources/"
 
-# Ad-hoc signature: enough for a locally built app to run and to register "Open at login".
-codesign --force --sign - "$APP" >/dev/null
+# Signed with "Agent Deck Local" when scripts/signing-cert.sh has made it, so macOS keeps its permissions
+# across updates; otherwise ad hoc, which runs fine but makes macOS ask again after each build.
+KC="$HOME/Library/Keychains/agent-deck-signing.keychain-db"
+if [ -f "$KC" ] && security unlock-keychain -p agent-deck-local "$KC" 2>/dev/null; then
+  codesign --force --keychain "$KC" --sign "Agent Deck Local" "$APP" >/dev/null
+else
+  codesign --force --sign - "$APP" >/dev/null
+fi
 echo "$APP"

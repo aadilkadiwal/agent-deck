@@ -14,6 +14,7 @@
     <!-- Menu bar only: no Dock icon, no app menu. -->
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSFocusStatusUsageDescription</key><string>Agent Deck keeps alerts quiet while you're in a Focus.</string>
     <key>NSAppleEventsUsageDescription</key><string>Agent Deck opens and resumes Claude Code sessions in iTerm.</string>
 </dict>
 </plist>

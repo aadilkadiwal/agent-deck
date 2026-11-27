@@ -20,19 +20,19 @@ struct PeekAlert {
         var word: String {
             switch self {
             case .needs: "Waiting on you"
-            case .risky: "Risky command"
+            case .risky: "Careful"
             case .done: "Done"
             case .warn: "Close to the limit"
-            case .runsOut: "Runs out soon"
+            case .runsOut: "Running out"
             case .reached: "Limit reached"
-            case .back: "Back to work"
+            case .back: "You're back"
             }
         }
         var sound: String {
             switch self {
-            case .needs, .risky: "Glass"
-            case .warn, .runsOut, .reached: "Sosumi"
-            case .done, .back: "Pop"
+            case .needs, .risky: "DotNeeds"
+            case .warn, .runsOut, .reached: "DotLimit"
+            case .done, .back: "DotDone"
             }
         }
         /// Seconds on screen; questions stay until answered or clicked away.
@@ -64,6 +64,7 @@ struct PeekAlert {
     var actions: [Action] = []
     var celebrate = true
     var seconds: Double?
+    var quiet = false
     var lifetime: Double? { seconds ?? kind.seconds }
 }
 
@@ -167,7 +168,7 @@ enum Peek {
         state.doneText = nil
         resize(anchor: place)
         panel.orderFrontRegardless()
-        NSSound(named: alert.kind.sound)?.play()
+        if !alert.quiet { NSSound(named: alert.kind.sound)?.play() }
         NSAccessibility.post(element: panel, notification: .announcementRequested,
                              userInfo: [.announcement: "\(alert.kind.word). \(alert.title)", .priority: NSAccessibilityPriorityLevel.high.rawValue])
         Task {

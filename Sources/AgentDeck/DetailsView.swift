@@ -368,7 +368,7 @@ struct SessionsTab: View {
                     }
                     .onAppear { if !reduceMotion { sparkle.toggle() } }
                     .buttonStyle(.bordered).controlSize(.small).tint(.orange)
-                    .help("Sessions you opened and closed without a reply from Claude")
+                    .help("Sessions that ended before Claude replied")
                 }
                 Spacer()
                 Picker("Last active", selection: $range) {
@@ -390,8 +390,8 @@ struct SessionsTab: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(highlighted(r.name, search)).lineLimit(1)
-                        if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
-                        if r.live?.kind == .background { Pill(text: "Background").help("Background session: it runs without a terminal window") }
+                        if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(.secondary).help("On your phone") }
+                        if r.live?.kind == .background { Pill(text: "Background").help("Runs in the background, without a terminal window") }
                     }
                     if let p = r.promptLine {
                         Text(highlighted("“\(p)”", search)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
@@ -416,7 +416,7 @@ struct SessionsTab: View {
                         .help("Open since \(Fmt.clock(s.startedAt))")
                 } else {
                     Text(r.duration.map(Fmt.duration) ?? "—").monospacedDigit().foregroundStyle(r.duration == nil ? .tertiary : .primary)
-                        .help("How long it ran, from the first message to the last")
+                        .help("How long it ran, first message to last")
                 }
             }
             .width(min: 96, ideal: 108)
@@ -480,7 +480,7 @@ struct SessionsTab: View {
                     Text("Nothing is waiting for you")
                 }
             } description: {
-                Text("Prompts, questions and plans show up here as cards you can answer, the same ones as in the menu.")
+                Text("Prompts, questions and plans show up here as cards you can answer, just like in the menu.")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -518,7 +518,7 @@ struct SessionsTab: View {
                 Button("Clear selection") { selection.removeAll() }
                 Button(runningCount > 0 ? "Delete \(picked.count) closed…" : "Delete…", role: .destructive) { pendingDelete = picked }
                     .disabled(picked.isEmpty)
-                    .help("Moves the files to the Trash. Running sessions are never deleted. ⌫ in the table does the same.")
+                    .help("Moves them to the Trash. Running sessions are never deleted. ⌫ does the same.")
             }
         }
     }
@@ -665,7 +665,7 @@ struct Inspector<Actions: View>: View {
         if !row.branch.isEmpty { field("Branch", row.branch) }
         VStack(alignment: .leading, spacing: 2) {
             Text("Session ID").foregroundStyle(.secondary)
-                .help("Claude Code's id for this conversation. claude --resume takes it.")
+                .help("Use it with claude --resume to pick this conversation up again.")
             HStack {
                 Text(row.id).font(.subheadline.monospaced()).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
                 Button { copy(row.id) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
@@ -800,12 +800,12 @@ struct UsageTab: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Shared account").font(.body.weight(.semibold))
-                            InfoButton(text: "Everyone signed in to the same Claude account shares these limits. Claude Code's status line carries the account's numbers; when nobody uses Claude on this Mac, Agent Deck reads them from Anthropic every ten minutes instead, so it still warns you. A rise with no reply written on this Mac counts as another Mac's.")
+                            InfoButton(text: "Everyone signed in to your Claude account shares these limits. Claude Code sends the numbers while it runs here. When nobody uses Claude on this Mac, Agent Deck asks Anthropic every ten minutes instead, so you still get warned. A rise with no reply from this Mac counts as another Mac's.")
                             Spacer()
                             Text(model.usageIsAccount ? "Read from Anthropic" : "From Claude Code on this Mac").foregroundStyle(.secondary)
                         }
                         if model.lastHour.total >= 1 { LastHourBar(model: model) }
-                        else { Text("Nobody on this login used it in the last hour.").foregroundStyle(.secondary) }
+                        else { Text("Nobody on your account used it in the last hour.").foregroundStyle(.secondary) }
                     }
                     .padding(12)
                     .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
@@ -814,7 +814,7 @@ struct UsageTab: View {
                         HStack {
                             Text(chartKey == "five_hour" ? "5-hour limit, last 24 hours" : "Weekly limit, last 7 days")
                                 .font(.body.weight(.semibold))
-                            InfoButton(text: "The same numbers /usage shows. They refresh every few minutes from your account, and with every Claude Code reply on this Mac. The dashed orange line is the pace forecast: it compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
+                            InfoButton(text: "The same numbers /usage shows. They refresh every few minutes, and with every Claude Code reply on this Mac. The dashed orange line is where you're heading at your pace over the last hour (5-hour) or day (weekly). It shows up after 10 minutes of readings.")
                             Spacer()
                             Picker("", selection: $chartKey) {
                                 Text("5-hour").tag("five_hour")
@@ -838,7 +838,7 @@ struct UsageTab: View {
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     ContentUnavailableView("No usage numbers yet", systemImage: "chart.xyaxis.line",
-                                           description: Text("They appear within a few minutes once this Mac is signed in to Claude Code, or after your next Claude Code message."))
+                                           description: Text("They show up after your next Claude Code message."))
                 }
             }
             .padding(20)
@@ -860,7 +860,7 @@ struct ProjectUsageView: View {
             HStack {
                 Text(span == "five_hour" ? "Tokens by project, last 5 hours" : "Tokens by project, last 7 days")
                     .font(.body.weight(.semibold))
-                InfoButton(text: "Input, output and cache-write tokens read from transcripts. Click a project to see its sessions.")
+                InfoButton(text: "Input, output and cache-write tokens from your transcripts. Click a project to see its sessions.")
                 Spacer()
                 Picker("", selection: $span) {
                     Text("5 hours").tag("five_hour")
@@ -898,7 +898,7 @@ struct ProjectUsageView: View {
                 Text(Fmt.folderTitle(e.folder)).lineLimit(1).truncationMode(.middle)
                     .frame(width: 150, alignment: .leading)
                 GeometryReader { g in
-                    RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.75))
+                    RoundedRectangle(cornerRadius: 3).fill(Color.gray.opacity(0.6))
                         .frame(width: max(3, g.size.width * share))
                         .frame(maxHeight: .infinity)
                 }
@@ -958,7 +958,7 @@ struct UsageChart: View {
         return Group {
             if points.count < 2 {
                 ContentUnavailableView("Not enough readings yet", systemImage: "chart.xyaxis.line",
-                                       description: Text("The chart fills in as Claude Code sends usage numbers."))
+                                       description: Text("The chart fills in as you use Claude Code."))
                     .frame(height: 220)
             } else {
                 Chart {
@@ -972,10 +972,10 @@ struct UsageChart: View {
                     ForEach(pieces) { p in
                         AreaMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
                             .interpolationMethod(.stepEnd)
-                            .foregroundStyle(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.gray.opacity(0.15))
                         LineMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
                             .interpolationMethod(.stepEnd)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(Color.primary.opacity(0.7))
                             .lineStyle(StrokeStyle(lineWidth: 2))
                     }
                     if let eta, let last = points.last {
@@ -1044,7 +1044,7 @@ struct UsageHeatmapView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("When you use the most, last 7 days").font(.body.weight(.semibold))
-                InfoButton(text: "Each square is one hour. The darker it is, the more your 5-hour limit went up in that hour. It fills in from the usage readings Agent Deck saves while Claude Code runs. A rise between readings more than two hours apart is left out, since it can't be placed in one hour.")
+                InfoButton(text: "Each square is one hour. The stronger the colour, the more your 5-hour limit went up in that hour. It fills in as Claude Code runs. A jump between readings more than two hours apart is left out, since it can't be pinned to one hour.")
                 Spacer()
             }
             if m.peak <= 0 {
@@ -1063,7 +1063,7 @@ struct UsageHeatmapView: View {
                             ForEach(0..<24, id: \.self) { h in
                                 let v = m.cells[d][h]
                                 RoundedRectangle(cornerRadius: 2)
-                                    .fill(v > 0 ? Color.accentColor.opacity(0.15 + 0.85 * v / m.peak) : Color.secondary.opacity(0.08))
+                                    .fill(v > 0 ? heat(v / m.peak) : Color.secondary.opacity(0.08))
                                     .frame(height: 14)
                                     .help(v > 0 ? "\(m.weekdaySymbols[d]) \(Fmt.hour(h)) · +\(Int(v.rounded())) points" : "")
                             }
@@ -1079,6 +1079,8 @@ struct UsageHeatmapView: View {
         .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
         .task(id: "\(samples.count)-\(samples.last?.at.timeIntervalSince1970 ?? 0)") { map = UsageHeatmap.compute(samples) }
     }
+
+    private func heat(_ x: Double) -> Color { x >= 0.75 ? Color.orange.opacity(0.45 + 0.55 * x) : Color.gray.opacity(0.2 + 0.6 * x) }
 
     private func summary(_ m: UsageHeatmap) -> String {
         let busiest = m.busiest.map { "Busiest: \($0.day) \(hour($0.from))–\(hour($0.to))." } ?? ""
