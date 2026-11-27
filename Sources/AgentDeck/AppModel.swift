@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import ServiceManagement
 import AgentDeckCore
 import SwiftUI
@@ -8,6 +9,23 @@ struct Activity: Equatable {
     var tool: String?
     var detail: String?
     var subagents = Set<String>()
+}
+
+/// What a session did since you last looked, counted from hook events (no transcript reading).
+struct Away: Equatable {
+    var since = Date()
+    var files = Set<String>()
+    var commands = 0
+    var agents = 0
+
+    var line: String? {
+        let parts = [files.isEmpty ? nil : "edited \(Fmt.count(files.count, "file"))",
+                     commands == 0 ? nil : "ran \(Fmt.count(commands, "command"))",
+                     agents == 0 ? nil : "\(Fmt.count(agents, "agent")) done"].compactMap { $0 }
+        guard !parts.isEmpty else { return nil }
+        let mins = Int(Date().timeIntervalSince(since) / 60)
+        return (mins >= 1 ? "Since you looked, \(Fmt.span(Double(mins) * 60)): " : "Since you looked: ") + parts.joined(separator: " · ")
+    }
 }
 
 struct Banner: Identifiable, Equatable {
@@ -39,6 +57,13 @@ final class AppModel {
     /// Answered cards stay a moment to show what was sent, then leave.
     private(set) var outcomes: [Int: ApprovalAnswer] = [:]
     private(set) var activity: [String: Activity] = [:]
+    private(set) var away: [String: Away] = [:]
+    /// Replies typed while a session was working; each goes out when that session is idle again.
+    private(set) var queuedReplies: [String: String] = [:]
+    /// Set by Reply on a Done alert; the dropdown opens with the reply field on that row.
+    @ObservationIgnored var replyTarget: String?
+    private(set) var serviceStatus: ServiceStatus?
+    private(set) var allowedRules: [AllowedRule] = []
     private(set) var busySince: [String: Date] = [:]
     private(set) var recentUse = RecentUse()
     private(set) var continueQueue = Set<String>()
@@ -50,7 +75,9 @@ final class AppModel {
     private(set) var notificationsOff = false
     var menuOpen = false {
         didSet {
-            guard menuOpen else { return }
+            // Closing the menu is "having looked", so the counts start over.
+            guard menuOpen else { if oldValue { away = [:] }; return }
+            checkServiceStatus(every: 120)
             Task { await refresh(history: true, agents: true); await checkNotifications() }
             // A broken hook silently turns approvals off, so the dropdown checks too (not on every open).
             if Date().timeIntervalSince(lastHealthCheck) > 600 { Task { await checkHealth() } }
@@ -91,6 +118,12 @@ final class AppModel {
     private var watchTask: Task<Void, Never>?
     private var watchSessions = false
     private let hotkeys = Hotkeys()
+    private var awake: IOPMAssertionID?
+    private var lastStatusCheck = Date.distantPast
+    private var reminded = Set<String>()
+    private var blockedSince: [String: Date] = [:]
+    static let keepAwakeKey = "keepAwake", statusKey = "checkServiceStatus"
+    static let remindAfter: TimeInterval = 300
 
     init() {
         let paths = self.paths
@@ -126,10 +159,24 @@ final class AppModel {
             return await Task.detached { SessionDetail.lastReplyLine(url) }.value
         }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
+        notifier.awayLine = { [weak self] sid in
+            defer { self?.away[sid] = nil }
+            return self?.away[sid]?.line
+        }
+        notifier.canReply = { [weak self] sid in
+            guard let s = self?.live.first(where: { $0.sessionId == sid }) else { return false }
+            return s.kind == .interactive && self?.typingBlockers[sid] == nil
+        }
+        notifier.onReply = { [weak self] sid in
+            self?.replyTarget = sid
+            StatusMenu.open()
+        }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
+        hotkeys.onJump = { [weak self] in self?.jumpToWaiting() }
         hotkeys.onMenu = { StatusMenu.toggle() }
         menuHotkeyFailed = !hotkeys.setMenuKey(MenuHotkey.current)
-        UserDefaults.standard.register(defaults: [Self.approvalsKey: true])
+        UserDefaults.standard.register(defaults: [Self.approvalsKey: true, Self.statusKey: true])
+        allowedRules = AllowedRule.load(paths)
         setApprovals(UserDefaults.standard.bool(forKey: Self.approvalsKey))
         watch(paths.sessionsDir)
         watch(paths.appDir)
@@ -138,7 +185,7 @@ final class AppModel {
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
             Task { @MainActor in await self?.refreshUsage() }
-            Task { @MainActor in self?.notifier.flushHeld() }
+            Task { @MainActor in self?.notifier.flushHeld(); self?.remindWaiting(); self?.checkServiceStatus(every: 300) }
         }
         notifier.askForFocusStatus()
         Task { await refresh(history: true, agents: true) }
@@ -323,8 +370,14 @@ final class AppModel {
             notifier.sessionsChanged(from: live, to: next, name: displayName)
             let now = Date()
             busySince = Dictionary(uniqueKeysWithValues: next.filter { $0.state == .busy }.map { ($0.sessionId, busySince[$0.sessionId] ?? now) })
+            blockedSince = Dictionary(uniqueKeysWithValues: next.filter { $0.state == .blocked && !$0.isLeftover }
+                .map { ($0.sessionId, blockedSince[$0.sessionId] ?? now) })
             live = next
             activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
+            away = away.filter { id, _ in next.contains { $0.sessionId == id } }
+            sendQueuedReplies()
+            updateAwake()
+            updateApprovalUI()
             updateRecentFolders()
             lookUp(next)
         }
@@ -485,7 +538,7 @@ final class AppModel {
                 if let success { banner = Banner(text: success, actionTitle: undo == nil ? nil : "Undo", action: undo) }
             } catch let ClaudeCLI.Failure.untrusted(folder) {
                 banner = Banner(text: ClaudeCLI.Failure.untrusted(folder: folder).errorDescription ?? "", isError: true,
-                                actionTitle: "Open in iTerm") { [weak self] in
+                                actionTitle: "Open in \(TerminalApp.current.title)") { [weak self] in
                     self?.openTerminal(ClaudeCLI.ShellLine.new(cwd: folder, name: ""))
                 }
             } catch {
@@ -512,7 +565,7 @@ final class AppModel {
         if s.kind == .interactive {
             perform(s.sessionId, success: "\(name) is on your phone and still open on your Mac.") { try await $0.setPhone(s, on: true) }
         } else {
-            perform(s.sessionId, success: "\(name) is open in iTerm and on your phone.") { try await $0.openWithPhone(s) }
+            perform(s.sessionId, success: "\(name) is open in \(TerminalApp.current.title) and on your phone.") { try await $0.openWithPhone(s) }
         }
     }
 
@@ -556,13 +609,15 @@ final class AppModel {
         return h.name
     }
 
-    func newOnPhone(folder: String, name: String) {
-        perform("new", success: "Started a session in \(Fmt.folderTitle(folder)). It's on your phone now.") {
-            try await $0.newOnPhone(cwd: folder, name: name)
+    func newOnPhone(folder: String, name: String, worktree: Bool = false) {
+        perform("new", success: "Started a session in \(Fmt.folderTitle(folder))\(worktree ? ", in its own worktree" : ""). It's on your phone now.") {
+            try await $0.newOnPhone(cwd: folder, name: name, worktree: worktree)
         }
     }
 
-    func newInTerminal(folder: String, name: String) { openTerminal(ClaudeCLI.ShellLine.new(cwd: folder, name: name)) }
+    func newInTerminal(folder: String, name: String, worktree: Bool = false) {
+        openTerminal(ClaudeCLI.ShellLine.new(cwd: folder, name: name, worktree: worktree))
+    }
     func resumeInTerminal(_ h: HistorySession) { openTerminal(ClaudeCLI.ShellLine.resume(h.sessionId, cwd: h.cwd)) }
 
     func open(_ s: LiveSession) {
@@ -573,7 +628,113 @@ final class AppModel {
     }
 
     func openTerminal(_ line: String) {
-        do { try cli?.openInITerm(line) } catch { banner = Banner(text: error.localizedDescription, isError: true) }
+        do { try cli?.openInTerminal(line) } catch { banner = Banner(text: error.localizedDescription, isError: true) }
+    }
+
+    // MARK: Reply
+
+    /// Typed into the session's iTerm tab like /rename, with the same checks: never mixed into a
+    /// draft, never into a question. A working session gets it once it's idle again.
+    func reply(_ s: LiveSession, _ text: String) {
+        let t = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        let name = displayName(s), sid = s.sessionId
+        if s.state == .busy {
+            queuedReplies[sid] = t
+            banner = Banner(text: "Queued. It goes to \(name) when it finishes.", actionTitle: "Cancel") { [weak self] in
+                self?.queuedReplies[sid] = nil
+            }
+            return
+        }
+        away[sid] = nil
+        perform(sid, success: "Sent to \(name).") { try await $0.send(t, to: s) }
+    }
+
+    private func sendQueuedReplies() {
+        for (sid, text) in queuedReplies {
+            guard let s = live.first(where: { $0.sessionId == sid }) else {
+                queuedReplies[sid] = nil
+                banner = Banner(text: "That session ended before your reply went out.", isError: true)
+                continue
+            }
+            guard s.state == .idle else { continue }
+            queuedReplies[sid] = nil
+            reply(s, text)
+        }
+    }
+
+    // MARK: Keep awake
+
+    /// Holds off idle sleep (the display may still sleep) while any session is working.
+    func updateAwake() {
+        let want = UserDefaults.standard.bool(forKey: Self.keepAwakeKey) && count(.busy) > 0
+        if want, awake == nil {
+            var id = IOPMAssertionID(0)
+            if IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                           "Claude Code is working" as CFString, &id) == kIOReturnSuccess { awake = id }
+        } else if !want, let id = awake {
+            IOPMAssertionRelease(id)
+            awake = nil
+        }
+    }
+
+    func setKeepAwake(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.keepAwakeKey)
+        updateAwake()
+    }
+
+    var keepsAwake: Bool { awake != nil }
+
+    // MARK: Claude status
+
+    func checkServiceStatus(every interval: TimeInterval) {
+        guard UserDefaults.standard.bool(forKey: Self.statusKey) else { serviceStatus = nil; return }
+        guard menuOpen || count(.busy) > 0, Date().timeIntervalSince(lastStatusCheck) >= interval else { return }
+        lastStatusCheck = Date()
+        Task {
+            let s = await ServiceStatus.fetch()
+            if s != serviceStatus { serviceStatus = s }
+        }
+    }
+
+    // MARK: Waiting prompts
+
+    private func remindWaiting() {
+        let now = Date()
+        for r in pendingApprovals where now.timeIntervalSince(r.receivedAt) >= Self.remindAfter && reminded.insert("a\(r.id)").inserted {
+            notifier.approvalArrived(r, name: sessionName(r.sessionId, cwd: r.cwd), waited: now.timeIntervalSince(r.receivedAt))
+        }
+        let carded = Set(approvals.map(\.sessionId))
+        for (sid, since) in blockedSince where !carded.contains(sid) && now.timeIntervalSince(since) >= Self.remindAfter
+            && reminded.insert("w\(sid)-\(Int(since.timeIntervalSince1970))").inserted {
+            if let s = live.first(where: { $0.sessionId == sid }) { notifier.stillWaiting(s, name: displayName(s), waited: now.timeIntervalSince(since)) }
+        }
+    }
+
+    /// ⌃⌥J: the session that has waited longest, in its own terminal tab.
+    private func jumpToWaiting() {
+        let carded = pendingApprovals.map { ($0.sessionId, $0.receivedAt) }
+        let other = blockedSince.filter { sid, _ in !carded.contains { $0.0 == sid } }.map { ($0.key, $0.value) }
+        guard let sid = (carded + other).min(by: { $0.1 < $1.1 })?.0 else { NSSound.beep(); return }
+        openSession(id: sid)
+    }
+
+    // MARK: Allowed rules
+
+    private func logRules(_ r: ApprovalRequest, _ scope: RuleScope) {
+        guard scope != .session, !r.alwaysRules.isEmpty else { return }
+        let added = r.alwaysRules.map { AllowedRule(rule: $0, everywhere: scope == .everywhere, cwd: r.cwd) }
+        allowedRules = added + allowedRules.filter { old in !added.contains { $0.id == old.id } }
+        AllowedRule.save(allowedRules, paths)
+    }
+
+    func removeRule(_ rule: AllowedRule) {
+        do {
+            try rule.remove(paths)
+            allowedRules.removeAll { $0.id == rule.id }
+            AllowedRule.save(allowedRules, paths)
+            banner = Banner(text: "Removed \(rule.rule). Claude Code asks again next time.")
+        } catch { banner = Banner(text: "Couldn't remove it. \(error.localizedDescription)", isError: true) }
     }
 
     /// Only closed sessions; running ones are skipped so a live transcript is never pulled away.
@@ -706,12 +867,18 @@ final class AppModel {
         case "PreToolUse": (a.tool, a.detail) = (e.toolName, e.toolSummary)
         case "PostToolUse":
             a.tool = nil
+            var w = away[sid] ?? Away()
+            if let tool = e.toolName, Self.editTools.contains(tool), let file = e.toolSummary?.split(separator: "\n").first { w.files.insert(String(file)) }
+            if e.toolName == "Bash" { w.commands += 1 }
+            away[sid] = w
             // That tool ran, so a card still asking about it was answered in the terminal.
             for r in approvals where r.sessionId == sid && r.toolName == e.toolName && r.detail == e.toolSummary.map({ String($0.prefix(4000)) }) {
                 answer(r.id, .terminal)
             }
         case "SubagentStart": if let id = e.subagentId { a.subagents.insert(id) }
-        case "SubagentStop": if let id = e.subagentId { a.subagents.remove(id) }
+        case "SubagentStop":
+            if let id = e.subagentId { a.subagents.remove(id) }
+            away[sid, default: Away()].agents += 1
         case "Stop":
             a = Activity()
             autoAcceptEdits.remove(sid)
@@ -724,6 +891,10 @@ final class AppModel {
     func answer(_ id: Int, _ a: ApprovalAnswer) {
         guard outcomes[id] == nil else { return }
         approvalServer?.answer(id, a)
+        if let r = approvals.first(where: { $0.id == id }) {
+            if a != .terminal { away[r.sessionId] = nil }
+            if case .allow(true, let scope) = a { logRules(r, scope) }
+        }
         guard a != .terminal, approvals.contains(where: { $0.id == id }) else { removeApproval(id); return }
         outcomes[id] = a
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -767,6 +938,7 @@ final class AppModel {
 
     private func updateApprovalUI() {
         hotkeys.setEnabled(pendingApprovals.contains { $0.kind == .permission })
+        hotkeys.setJump(!pendingApprovals.isEmpty || needsYou)
     }
 
     /// Claude Code doesn't stop the hook when you answer in the terminal. Once the session's pid file

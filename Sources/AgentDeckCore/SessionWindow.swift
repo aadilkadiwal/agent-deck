@@ -68,6 +68,15 @@ public struct SessionWindow: Sendable {
         return line.trimmingCharacters(in: .whitespaces).dropFirst().trimmingCharacters(in: .whitespaces)
     }
 
+    /// Everything in the prompt box, without spaces, so text that wrapped onto more lines still
+    /// compares equal to what was typed. The box ends at its bottom border line.
+    public static func typed(in screen: String) -> String? {
+        let lines = screen.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let start = lines.lastIndex(where: { $0.hasPrefix("❯") }) else { return nil }
+        let box = lines[start...].prefix { !$0.hasPrefix("─") }
+        return String(box.joined().dropFirst().filter { !$0.isWhitespace })
+    }
+
     @discardableResult
     @MainActor private func run(match body: String) throws -> String {
         let source = """

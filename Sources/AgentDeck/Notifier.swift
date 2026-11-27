@@ -26,6 +26,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var peek: ((PeekAlert) -> Bool)?
     var hasApproval: ((String) -> Bool)?
     var lastReply: ((String) async -> String?)?
+    var awayLine: ((String) -> String?)?
+    var canReply: ((String) -> Bool)?
+    var onReply: ((String) -> Void)?
     private var busySince: [String: Date] = [:]
     private var lastCelebrated: Date?
     private var held: [Held] = []
@@ -62,7 +65,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         super.init()
         UserDefaults.standard.register(defaults: [Key.waiting: true, Key.finished: true, Key.limits: true])
         let allow = UNNotificationAction(identifier: "allow", title: "Allow")
-        let always = UNNotificationAction(identifier: "always", title: "Always allow")
+        let always = UNNotificationAction(identifier: "always", title: "Allow for this session")
         let deny = UNNotificationAction(identifier: "deny", title: "Deny", options: .destructive)
         UNUserNotificationCenter.current().setNotificationCategories([
             UNNotificationCategory(identifier: "permission", actions: [allow, deny], intentIdentifiers: []),
@@ -96,11 +99,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 let took = "Done after \(Fmt.duration(now.timeIntervalSince(start)))"
                 let big = now.timeIntervalSince(start) >= 600 || !(lastCelebrated.map(Calendar.current.isDateInToday) ?? false)
                 if big { lastCelebrated = now }
-                let sid = s.sessionId, title = name(s), actions = [show(sid)]
+                let sid = s.sessionId, title = name(s)
+                let actions = (canReply?(sid) == true ? [PeekAlert.Action(title: "Reply…") { [weak self] in self?.onReply?(sid) }] : []) + [show(sid)]
+                let did = awayLine?(sid)
                 Task { [weak self] in
                     let line = await self?.lastReply?(sid)
-                    self?.post(PeekAlert(id: "done-\(sid)", kind: .done, title: title, meta: took, lines: line.map { [$0] } ?? [], actions: actions, celebrate: big),
-                               body: line.map { "\(took)\n\($0)" } ?? took, sessionId: sid)
+                    let lines = [did, line].compactMap { $0 }
+                    self?.post(PeekAlert(id: "done-\(sid)", kind: .done, title: title, meta: took, lines: lines, actions: actions, celebrate: big),
+                               body: ([took] + lines).joined(separator: "\n"), sessionId: sid)
                 }
             }
             if s.state == .idle { busySince[s.sessionId] = nil }
@@ -183,7 +189,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
              body: lines.joined(separator: "\n"), sessionId: nil)
     }
 
-    func approvalArrived(_ r: ApprovalRequest, name: String) {
+    /// The reminder for a prompt nobody answered reuses its alert id, so answering clears either one.
+    func stillWaiting(_ s: LiveSession, name: String, waited: TimeInterval) {
+        guard enabled(Key.waiting) else { return }
+        let meta = "Still waiting · \(Fmt.span(waited))"
+        post(PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name, meta: meta, lines: [Self.waitingText(s.waitingFor)],
+                       actions: [show(s.sessionId)]),
+             body: "\(meta). \(Self.waitingText(s.waitingFor))", sessionId: s.sessionId)
+    }
+
+    func approvalArrived(_ r: ApprovalRequest, name: String, waited: TimeInterval? = nil) {
         // The session can read as waiting a moment before its card arrives; the card replaces that alert.
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["wait-\(r.sessionId)"])
         Peek.dismiss(id: "wait-\(r.sessionId)")
@@ -201,7 +216,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
         let decide = { [weak self] (a: ApprovalAnswer) -> Void in self?.onDecide?(r.id, a) }
         let review = { [weak self] () -> Void in self?.onReview?() }
-        var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title)
+        var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title,
+                              meta: waited.map { "Still waiting · \(Fmt.span($0))" })
         switch r.kind {
         case .permission:
             alert.code = body
@@ -209,7 +225,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 ? [.init(title: "Deny", style: .primary, done: "Denied") { decide(.deny) },
                    .init(title: "Allow once", style: .danger, done: "Allowed once") { decide(.allow(always: false)) }]
                 : [.init(title: "Deny", done: "Denied") { decide(.deny) }]
-                    + (r.alwaysLabel == nil ? [] : [.init(title: "Always allow", done: "Always allowed") { decide(.allow(always: true)) }])
+                    + (r.alwaysLabel == nil ? [] : [.init(title: "For this session", done: "Allowed for this session") { decide(.allow(always: true)) }])
                     + [.init(title: "Allow", style: .primary, done: "Allowed") { decide(.allow(always: false)) }]
         case .plan:
             alert.lines = Array(body.split(separator: "\n").map { $0.replacingOccurrences(of: #"^\s*#+\s*"#, with: "", options: .regularExpression) }

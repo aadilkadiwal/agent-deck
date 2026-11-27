@@ -47,3 +47,49 @@ public enum ClaudeSettings {
         try out.write(to: paths.settingsFile, options: .atomic)
     }
 }
+
+/// Lasting "Always allow" rules added from Agent Deck, so Settings can list them and take them back.
+/// Session rules aren't kept: they end with their session.
+public struct AllowedRule: Codable, Equatable, Identifiable, Sendable {
+    public let rule: String
+    public let everywhere: Bool
+    public let cwd: String
+    public let at: Date
+    public var id: String { "\(everywhere ? "" : cwd)|\(rule)" }
+
+    public init(rule: String, everywhere: Bool, cwd: String, at: Date = Date()) {
+        self.rule = rule; self.everywhere = everywhere; self.cwd = cwd; self.at = at
+    }
+
+    public func settingsFile(_ paths: ClaudePaths) -> URL {
+        everywhere ? paths.settingsFile : URL(fileURLWithPath: cwd).appendingPathComponent(".claude/settings.local.json")
+    }
+
+    static func logFile(_ paths: ClaudePaths) -> URL { paths.appDir.appendingPathComponent("allowed-rules.json") }
+
+    public static func load(_ paths: ClaudePaths) -> [AllowedRule] {
+        (try? Data(contentsOf: logFile(paths))).flatMap { try? JSONDecoder().decode([AllowedRule].self, from: $0) } ?? []
+    }
+
+    public static func save(_ rules: [AllowedRule], _ paths: ClaudePaths) {
+        try? FileManager.default.createDirectory(at: paths.appDir, withIntermediateDirectories: true)
+        try? JSONEncoder().encode(rules).write(to: logFile(paths), options: .atomic)
+    }
+
+    /// Takes the rule out of `permissions.allow` in the file Claude Code wrote it to. A rule that's
+    /// already gone (removed by hand) counts as removed.
+    public func remove(_ paths: ClaudePaths) throws {
+        let file = settingsFile(paths)
+        guard let data = try? Data(contentsOf: file) else { return }
+        guard var o = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ClaudeSettings.Failure.unreadable("it isn't a JSON object")
+        }
+        var perms = o["permissions"] as? [String: Any] ?? [:]
+        // Claude Code stores brackets inside a rule escaped (`print\(2\)`), so compare without them.
+        let plain = { (r: String) in r.replacingOccurrences(of: "\\", with: "") }
+        guard let allow = perms["allow"] as? [String], allow.contains(where: { plain($0) == plain(rule) }) else { return }
+        perms["allow"] = allow.filter { plain($0) != plain(rule) }
+        o["permissions"] = perms
+        try JSONSerialization.data(withJSONObject: o, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]).write(to: file, options: .atomic)
+    }
+}

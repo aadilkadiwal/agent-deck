@@ -1,6 +1,75 @@
 import AppKit
 import Foundation
 
+/// Where new and resumed sessions open. Typing into a running session (phone, compact, rename,
+/// reply) still needs iTerm, since only iTerm lets Agent Deck find a tab by tty and type into it.
+public enum TerminalApp: String, CaseIterable, Identifiable, Sendable {
+    case iterm, terminal, ghostty
+    public static let key = "terminalApp"
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .iterm: "iTerm"
+        case .terminal: "Terminal"
+        case .ghostty: "Ghostty"
+        }
+    }
+
+    var bundleId: String {
+        switch self {
+        case .iterm: SessionWindow.itermBundleId
+        case .terminal: Terminals.terminalBundleId
+        case .ghostty: "com.mitchellh.ghostty"
+        }
+    }
+
+    public var isInstalled: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) != nil }
+
+    public static var current: TerminalApp { TerminalApp(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .iterm }
+
+    /// A new tab (iTerm, Ghostty) or window (Terminal) running `line` in the user's own shell,
+    /// so the shell stays when Claude exits.
+    func script(_ line: String) -> String {
+        let l = ClaudeCLI.appleScriptEscape(line)
+        switch self {
+        case .iterm:
+            return """
+            tell application "iTerm"
+                activate
+                if current window is missing value then
+                    set w to (create window with default profile)
+                else
+                    set w to current window
+                    tell w to create tab with default profile
+                end if
+                tell current session of w to write text "\(l)"
+            end tell
+            """
+        case .terminal:
+            return """
+            tell application "Terminal"
+                activate
+                do script "\(l)"
+            end tell
+            """
+        case .ghostty:
+            return """
+            tell application "Ghostty"
+                set cfg to new surface configuration
+                set initial input of cfg to "\(l)" & linefeed
+                if (count of windows) > 0 then
+                    new tab in front window with configuration cfg
+                else
+                    new window with configuration cfg
+                end if
+                activate
+            end tell
+            """
+        }
+    }
+}
+
 /// Brings a session's own tab to the front: iTerm and Terminal by tty, a tmux pane (then the
 /// terminal tab its client is in), kitty and WezTerm by folder. Any other app is just activated.
 enum Terminals {

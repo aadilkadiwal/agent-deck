@@ -1,12 +1,15 @@
 import Carbon.HIToolbox
 import Foundation
 
-/// Registered only while a permission prompt is waiting, so other apps keep ⌃⌥A / ⌃⌥D otherwise.
+/// Registered only while something is waiting, so other apps keep ⌃⌥A / ⌃⌥D / ⌃⌥J otherwise.
 @MainActor
 final class Hotkeys {
     var onKey: ((_ allow: Bool) -> Void)?
     var onMenu: (() -> Void)?
+    var onJump: (() -> Void)?
     private var refs: [EventHotKeyRef] = []
+    private var jumpRef: EventHotKeyRef?
+    private static let jumpId: UInt32 = 4
     private var menuRef: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private static let signature: OSType = 0x41_44_63_6B   // "ADck"
@@ -26,6 +29,16 @@ final class Hotkeys {
                                              GetApplicationEventTarget(), 0, &ref)
             if status == noErr, let ref { refs.append(ref) }
         }
+    }
+
+    func setJump(_ on: Bool) {
+        guard on == (jumpRef == nil) else { return }
+        if let jumpRef { UnregisterEventHotKey(jumpRef); self.jumpRef = nil; return }
+        installHandler()
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(UInt32(kVK_ANSI_J), UInt32(controlKey | optionKey), EventHotKeyID(signature: Self.signature, id: Self.jumpId),
+                                         GetApplicationEventTarget(), 0, &ref)
+        jumpRef = status == noErr ? ref : nil
     }
 
     func setMenuKey(_ key: MenuHotkey) -> Bool {
@@ -51,7 +64,11 @@ final class Hotkeys {
             let me = Unmanaged<Hotkeys>.fromOpaque(ctx).takeUnretainedValue()
             let id = key.id
             Task { @MainActor in
-                if id == Hotkeys.menuId { me.onMenu?() } else { me.onKey?(id == 1) }
+                switch id {
+                case Hotkeys.menuId: me.onMenu?()
+                case Hotkeys.jumpId: me.onJump?()
+                default: me.onKey?(id == 1)
+                }
             }
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)

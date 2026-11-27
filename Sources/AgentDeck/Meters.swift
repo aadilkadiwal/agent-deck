@@ -40,9 +40,10 @@ struct Meter: View {
     var body: some View {
         let pct = window.percent(), full = pct >= LimitWindow.full
         let out: Date? = if !full, case .reachesLimit(let at) = forecast, at > Date() { at } else { nil }
+        let elapsed = full ? nil : window.elapsed()
         HStack(spacing: 8) {
             Text(window.key == "five_hour" ? "5-hour" : window.label).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
-            MeterBar(percent: pct)
+            MeterBar(percent: pct, elapsed: elapsed)
             Text("\(Int(pct.rounded()))%").fontWeight(.semibold).monospacedDigit()
                 .foregroundStyle(pct >= Notifier.warnAt ? Level.color(pct) : .primary)
                 .frame(width: 38, alignment: .trailing)
@@ -55,15 +56,39 @@ struct Meter: View {
         }
         .font(.subheadline)
         .animation(Motion.spring(reduced: reduceMotion), value: pct)
-        .help(full ? "\(window.label) limit reached. \(Fmt.resetsTitle(window.resetsAt))."
-              : "\(window.label) limit: \(Int(pct.rounded()))% used · \(Fmt.resets(window.resetsAt))" + (out.map { " · at this pace it runs out at \(Fmt.clock($0))" } ?? ""))
+        .help(tooltip(pct, full: full, elapsed: elapsed, out: out))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(window.label) limit \(Int(pct.rounded())) percent" + (full ? ", reached, back at \(window.resetsAt.map(Fmt.clock) ?? "reset")" : ""))
+        .accessibilityLabel(spoken(pct, full: full, elapsed: elapsed))
+    }
+
+    private func tooltip(_ pct: Double, full: Bool, elapsed: Double?, out: Date?) -> String {
+        if full { return "\(window.label) limit reached. \(Fmt.resetsTitle(window.resetsAt))." }
+        var parts = ["\(window.label) limit: \(Int(pct.rounded()))% used"]
+        if let elapsed { parts.append(Self.pace(pct, elapsed)) }
+        parts.append(Fmt.resets(window.resetsAt))
+        if let out { parts.append("at this pace it runs out at \(Fmt.clock(out))") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func spoken(_ pct: Double, full: Bool, elapsed: Double?) -> String {
+        var s = "\(window.label) limit \(Int(pct.rounded())) percent"
+        if full { s += ", reached, back at \(window.resetsAt.map(Fmt.clock) ?? "reset")" }
+        if let elapsed { s += ", " + Self.pace(pct, elapsed) }
+        return s
+    }
+
+    /// Used against time gone: ahead means using it faster than the window runs.
+    static func pace(_ pct: Double, _ elapsed: Double) -> String {
+        let gone = Int((elapsed * 100).rounded()), diff = Int((pct - elapsed * 100).rounded())
+        let pace = abs(diff) < 3 ? "on pace" : diff > 0 ? "\(diff)% ahead of pace" : "\(-diff)% behind pace"
+        return "\(gone)% of the time gone, \(pace)"
     }
 }
 
+/// The tick marks how much of the window's time has passed: fill past it means you're using it faster.
 struct MeterBar: View {
     let percent: Double
+    var elapsed: Double?
     private let height: CGFloat = 6
 
     var body: some View {
@@ -71,6 +96,11 @@ struct MeterBar: View {
             .overlay(alignment: .leading) {
                 GeometryReader { g in
                     Capsule().fill(Level.color(percent)).frame(width: max(height, g.size.width * min(percent, 100) / 100))
+                    if let elapsed {
+                        RoundedRectangle(cornerRadius: 1).fill(Color.primary.opacity(0.75))
+                            .frame(width: 2, height: height + 6)
+                            .offset(x: min(g.size.width - 2, max(0, g.size.width * elapsed - 1)), y: -3)
+                    }
                 }
             }
             .frame(height: height)

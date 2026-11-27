@@ -72,8 +72,10 @@ def permission(payload):
         decision = {"behavior": "allow"}
         updates = []
         if reply.get("always"):
-            # Exactly the rule Claude Code itself suggested for this prompt.
-            updates += [s for s in payload.get("permission_suggestions") or []
+            # Exactly the rule Claude Code itself suggested for this prompt, kept where you picked.
+            scope = reply.get("scope")
+            updates += [dict(s, destination=scope) if scope in ("session", "localSettings", "userSettings") else s
+                        for s in payload.get("permission_suggestions") or []
                         if isinstance(s, dict) and s.get("type") == "addRules" and s.get("behavior") == "allow"]
         if reply.get("mode") == "acceptEdits":
             updates.append({"type": "setMode", "mode": "acceptEdits", "destination": "session"})

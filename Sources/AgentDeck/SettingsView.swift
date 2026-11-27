@@ -20,6 +20,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     let model: AppModel
     @AppStorage("barStyle") private var barStyle = BarStyle.closest.rawValue
+    @AppStorage(TerminalApp.key) private var terminalApp = TerminalApp.iterm.rawValue
+    @AppStorage(AppModel.keepAwakeKey) private var keepAwake = false
+    @AppStorage(AppModel.statusKey) private var checkStatus = true
     @AppStorage(Notifier.Key.waiting) private var notifyWaiting = true
     @AppStorage(Notifier.Key.finished) private var notifyFinished = true
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
@@ -98,14 +101,15 @@ struct SettingsView: View {
         Section {
             LabeledContent("Allow the oldest permission prompt", value: "⌃⌥A")
             LabeledContent("Deny the oldest permission prompt", value: "⌃⌥D")
+            LabeledContent("Show the session that has waited longest", value: "⌃⌥J")
         } header: { Text("Prompts") } footer: {
-            Note("These only work while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, always need a click on Allow once.")
+            Note("These only work while something is waiting, so other apps keep these keys the rest of the time. ⌃⌥J opens that session's terminal tab. Risky commands, like deleting folders or force-pushing, always need a click on Allow once.")
         }
         Section {
             LabeledContent("Move · open", value: "↑ ↓ · ⏎")
             LabeledContent("All actions for the selected row", value: "⌘K")
             LabeledContent("Approve · deny the selected card", value: "⌘⏎ · ⌘⌫")
-            LabeledContent("Phone · compact · clear · rename", value: "P · C · K · R")
+            LabeledContent("Reply · phone · compact · clear · rename", value: "M · P · C · K · R")
             LabeledContent("Stop the selected session", value: "⌘⌫")
             LabeledContent("Search · refresh · new session", value: "⌘F · ⌘R · ⌘N")
         } header: { Text("In the dropdown") }
@@ -150,6 +154,33 @@ struct SettingsView: View {
             Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
         } header: { Text("Prompts") } footer: {
             Note("Claude's prompts, questions and plans show up in the menu and as alerts. From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it. Risky commands always need a click. The terminal still asks too, and whichever you answer first counts. Turn this off and Claude asks only in the terminal.")
+        }
+
+        if !model.allowedRules.isEmpty {
+            Section {
+                ForEach(model.allowedRules) { r in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(r.rule).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle).help(r.rule)
+                            Text("\(r.everywhere ? "Everywhere" : Fmt.folderTitle(r.cwd)) · \(Fmt.ago(r.at))").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Remove") { model.removeRule(r) }
+                    }
+                }
+            } header: { Text("Rules you allowed from Agent Deck") } footer: {
+                Note("Remove takes the rule out of Claude Code's settings, so it asks again. \"For this session\" rules aren't listed: they end with the session.")
+            }
+        }
+
+        Section {
+            Picker("Open sessions in", selection: $terminalApp) {
+                ForEach(TerminalApp.allCases.filter { $0.isInstalled || $0.rawValue == terminalApp }) { Text($0.title).tag($0.rawValue) }
+            }
+            Toggle("Keep the Mac awake while Claude works", isOn: Binding(get: { keepAwake }, set: { keepAwake = $0; model.setKeepAwake($0) }))
+            Toggle("Show when Claude is having problems", isOn: Binding(get: { checkStatus }, set: { checkStatus = $0; model.checkServiceStatus(every: 0) }))
+        } header: { Text("Sessions") } footer: {
+            Note("New and resumed sessions open in the terminal you pick. Reply, phone, compact, clear and rename type into iTerm tabs only. Keeping awake stops idle sleep only while a session works; the display can still sleep, and closing the lid on battery still sleeps. Claude's status comes from status.claude.com, checked every few minutes while a session works or the menu is open.")
         }
 
         Section {

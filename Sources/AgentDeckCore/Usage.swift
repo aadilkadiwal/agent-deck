@@ -19,6 +19,12 @@ public struct LimitWindow: Equatable, Sendable, Identifiable {
         }
     }
 
+    public func elapsed(at now: Date = Date()) -> Double? {
+        let length: TimeInterval? = key == "five_hour" ? 5 * 3600 : key.hasPrefix("seven_day") ? 7 * 86400 : nil
+        guard let length, let r = resetsAt, r > now else { return nil }
+        return min(1, max(0, 1 - r.timeIntervalSince(now) / length))
+    }
+
     /// Once the reset time has passed the window is empty again, even before Claude Code reports it.
     public func percent(at now: Date = Date()) -> Double {
         if let r = resetsAt, r <= now { return 0 }

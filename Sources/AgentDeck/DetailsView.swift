@@ -525,29 +525,29 @@ struct SessionsTab: View {
 
     private func primary(for r: SessionRow) -> Inspector<EmptyView>.Primary {
         if let s = r.live {
-            return .init(title: s.kind == .interactive ? "Show its window" : "Open in iTerm", symbol: "macwindow") { model.open(s) }
+            return .init(title: s.kind == .interactive ? "Show its window" : "Open in \(TerminalApp.current.title)", symbol: "macwindow") { model.open(s) }
         }
-        return .init(title: "Resume in iTerm", symbol: "terminal") { open(r) }
+        return .init(title: "Resume in \(TerminalApp.current.title)", symbol: "terminal") { open(r) }
     }
 
     @ViewBuilder private func actions(for r: SessionRow, includeOpen: Bool) -> some View {
         Button("Rename…") { renaming = r }
             .disabled(r.live.map { $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
         if let s = r.live {
-            if includeOpen { Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) } }
+            if includeOpen { Button(s.kind == .interactive ? "Show its window" : "Open in \(TerminalApp.current.title)") { model.open(s) } }
             if s.kind == .interactive {
                 Button("Compact context") { model.compact(s) }
                     .disabled(s.state != .idle || model.typingBlockers[s.sessionId] != nil)
             }
             if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keep running)") { model.phoneOff(s) } }
-            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in iTerm + phone") { model.phoneOn(s) } }
+            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in \(TerminalApp.current.title) + phone") { model.phoneOn(s) } }
             if let url = s.phoneURL {
                 Button("Copy phone link") { copy(url.absoluteString) }
                 Button("Open on claude.ai") { NSWorkspace.shared.open(url) }
             }
             Button(s.isLeftover ? "Clear old entry" : "Stop") { model.stop(s) }
         } else if let h = r.saved {
-            if includeOpen { Button("Resume in iTerm") { model.resumeInTerminal(h) } }
+            if includeOpen { Button("Resume in \(TerminalApp.current.title)") { model.resumeInTerminal(h) } }
             Button("Delete…", role: .destructive) { pendingDelete = [h] }
             Button("Show file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([h.fileURL]) }
         }

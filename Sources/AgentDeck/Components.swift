@@ -140,6 +140,30 @@ struct RenameField: View {
     }
 }
 
+struct ReplyField: View {
+    let queued: Bool
+    let done: (String?) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("Reply to Claude", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onSubmit { send() }
+            .onAppear { focused = true }
+        Button("Cancel") { done(nil) }
+        Button(queued ? "Queue" : "Send") { send() }.keyboardShortcut(.defaultAction)
+            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+
+    private func send() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        done(t)
+    }
+}
+
 // `.activate` focus only exists with Keyboard navigation on, so a click never leaves a focus ring.
 struct HoverRow<Content: View>: View {
     var selected = false

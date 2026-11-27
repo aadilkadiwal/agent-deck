@@ -31,11 +31,11 @@ struct MenuView: View {
 
     enum Confirm: Equatable {
         case stop(LiveSession), openWithPhone(LiveSession), clearContext(LiveSession), compact(LiveSession), delete(HistorySession)
-        case renameLive(LiveSession), renameClosed(HistorySession), stopIdle
+        case renameLive(LiveSession), renameClosed(HistorySession), stopIdle, reply(LiveSession)
         var sessionId: String {
             switch self {
             case .stopIdle: return "idle-sessions"
-            case .stop(let s), .openWithPhone(let s), .clearContext(let s), .compact(let s), .renameLive(let s): return s.sessionId
+            case .stop(let s), .openWithPhone(let s), .clearContext(let s), .compact(let s), .renameLive(let s), .reply(let s): return s.sessionId
             case .delete(let h), .renameClosed(let h): return h.sessionId
             }
         }
@@ -107,6 +107,7 @@ struct MenuView: View {
             VStack(alignment: .leading, spacing: 0) {
                 healthBanner
                 header
+                if let st = model.serviceStatus { statusBanner(st).padding(.bottom, 8).transition(slide(from: .top)) }
                 if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 8).transition(slide(from: .top)) }
                 if urgent && !showingNew {
                     needsYou.transition(.opacity.combined(with: .move(edge: .top)))
@@ -195,6 +196,9 @@ struct MenuView: View {
                 model.menuOpen = true
                 tab = model.live.contains { !$0.isLeftover } ? .running : .recent
                 if model.startNewSession { showingNew = true; model.startNewSession = false }
+                if let sid = model.replyTarget, let s = model.live.first(where: { $0.sessionId == sid }) {
+                    model.replyTarget = nil; tab = .running; confirm = .reply(s)
+                }
                 listFocused = true
                 // Same card ⌃⌥A answers, so the outline and the hotkey hint agree.
                 let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
@@ -645,13 +649,14 @@ struct MenuView: View {
             .background { if waiting { RoundedRectangle(cornerRadius: Radius.row).fill(Color.orange.opacity(0.08)) } }
             .animation(Motion.snappy(reduceMotion), value: s.state)
             .contextMenu {
+                Button("Reply…") { confirm = .reply(s) }.disabled(replyBlocker(s) != nil)
                 Button("Rename…") { confirm = .renameLive(s) }
                     .disabled(s.kind == .background || model.typingBlockers[s.sessionId] != nil)
                 Button("Compact context…") { askCompact(s) }
                     .disabled(blocker(s, "compact") != nil)
                 Button("Clear context…") { askClear(s) }
                     .disabled(s.kind == .background || s.state == .busy || model.typingBlockers[s.sessionId] != nil)
-                Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
+                Button(s.kind == .interactive ? "Show its window" : "Open in \(TerminalApp.current.title)") { model.open(s) }
                 if let url = s.phoneURL { Button("Copy phone link") { copy(url.absoluteString) } }
                 Button("Copy session ID") { copy(s.sessionId) }
             }
@@ -678,6 +683,20 @@ struct MenuView: View {
         if let c = model.context[s.sessionId], c.percent < 10 { model.clearContext(s) } else { confirm = .clearContext(s) }
     }
 
+    private func replyBlocker(_ s: LiveSession) -> String? {
+        if s.kind == .background { return "It runs without a window. Open it to reply." }
+        return model.typingBlockers[s.sessionId]
+    }
+
+    private func statusBanner(_ st: ServiceStatus) -> some View {
+        Callout(tint: .orange) {
+            Text("\(st.text) Slow or failed replies are likely on Anthropic's side.").fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("Details") { NSWorkspace.shared.open(st.link) }.controlSize(.small)
+        }
+        .font(.subheadline)
+    }
+
     private func blocker(_ s: LiveSession, _ verb: String) -> String? {
         if s.kind == .background { return "It runs without a window, so there's nothing to \(verb)." }
         return model.typingBlockers[s.sessionId] ?? (s.state == .busy ? "Wait until it finishes its reply." : nil)
@@ -694,6 +713,7 @@ struct MenuView: View {
         case "r":
             if s.kind == .background { unavailable("It runs without a window, so it can't be renamed here.") }
             else if let why = model.typingBlockers[sid] { unavailable(why) } else { confirm = .renameLive(s) }
+        case "m": if let why = replyBlocker(s) { unavailable(why) } else { confirm = .reply(s) }
         case "\u{7F}" where command: confirm = .stop(s)
         default: return .ignored
         }
@@ -741,7 +761,7 @@ struct MenuView: View {
         }
         .contextMenu {
             Button("Rename…") { confirm = .renameClosed(h) }
-            Button("Resume in iTerm") { model.resumeInTerminal(h) }
+            Button("Resume in \(TerminalApp.current.title)") { model.resumeInTerminal(h) }
             Button("Copy session ID") { copy(h.sessionId) }
         }
     }
@@ -768,8 +788,8 @@ struct MenuView: View {
         switch (s.isOnPhone, s.kind) {
         case (false, .interactive): return "Open it on your phone too. It keeps running here."
         case (true, .interactive): return "On your phone. Click to disconnect the phone. It keeps running here."
-        case (false, .background): return s.isLeftover ? "Reopen it in iTerm and on your phone"
-                                                       : "Open in iTerm and on your phone"
+        case (false, .background): return s.isLeftover ? "Reopen it in \(TerminalApp.current.title) and on your phone"
+                                                       : "Open in \(TerminalApp.current.title) and on your phone"
         case (true, .background): return "Only on your phone. Click to stop it."
         }
     }
@@ -794,11 +814,19 @@ struct MenuView: View {
                 ConfirmRow(message: "Start fresh in the same window? You can undo it.",
                            confirmTitle: "Clear", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.clearContext(s) }
             case .openWithPhone(let s):
-                ConfirmRow(message: "It runs without a window. Open it in iTerm and on your phone?",
+                ConfirmRow(message: "It runs without a window. Open it in \(TerminalApp.current.title) and on your phone?",
                            confirmTitle: "Open", cancel: { confirm = nil }) { confirm = nil; model.phoneOn(s) }
             case .renameLive(let s):
                 HStack(spacing: 8) {
                     RenameField(initial: model.displayName(s)) { name in confirm = nil; if let name { model.rename(s, to: name) } }
+                }
+            case .reply(let s):
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        ReplyField(queued: s.state == .busy) { text in confirm = nil; if let text { model.reply(s, text) } }
+                    }
+                    Text(s.state == .busy ? "It's working, so this goes out when it finishes." : "Types it into its iTerm tab and presses Return.")
+                        .font(.subheadline).foregroundStyle(.secondary)
                 }
             case .renameClosed(let h):
                 HStack(spacing: 8) {
@@ -868,7 +896,12 @@ struct MenuView: View {
                 } else {
                     list.append(DeckAction(title: "Allow", key: "⌘⏎") { model.answer(id, .allow(always: false)) })
                     if let rule = r.alwaysLabel {
-                        list.append(DeckAction(title: "Always allow", detail: "Saves \(rule)") { model.answer(id, .allow(always: true)) })
+                        for scope in RuleScope.allCases {
+                            let title = scope == .session ? "Allow for this session" : scope == .project ? "Always allow in \(Fmt.folderTitle(r.cwd))" : "Always allow everywhere"
+                            list.append(DeckAction(title: title, detail: rule) {
+                                model.answer(id, .allow(always: true, scope: scope))
+                            })
+                        }
                     }
                 }
                 list.append(DeckAction(title: "Deny", key: "⌘⌫", destructive: true) { model.answer(id, .deny) })
@@ -882,11 +915,13 @@ struct MenuView: View {
             return list
         case .live(let sid):
             guard let s = model.live.first(where: { $0.sessionId == sid }) else { return [] }
-            let open = DeckAction(title: s.kind == .interactive ? "Show its window" : "Open in iTerm", key: "⏎") { model.open(s) }
+            let open = DeckAction(title: s.kind == .interactive ? "Show its window" : "Open in \(TerminalApp.current.title)", key: "⏎") { model.open(s) }
             let working = model.working.contains(sid) ? "Still doing the last thing. Try again in a moment." : nil
             let typing = model.typingBlockers[sid]
             var list = [open]
             if !s.isLeftover {
+                list.append(DeckAction(title: model.queuedReplies[sid] == nil ? "Reply…" : "Replace queued reply…", key: "M",
+                                       unavailable: working ?? replyBlocker(s)) { confirm = .reply(s) })
                 list.append(DeckAction(title: "Compact context", detail: "Frees up context. Claude keeps a summary.", key: "C",
                                        unavailable: working ?? blocker(s, "compact")) { askCompact(s) })
                 list.append(DeckAction(title: phoneTitle(s), key: "P", unavailable: working ?? typing) { togglePhone(s) })
@@ -902,7 +937,7 @@ struct MenuView: View {
         case .closed(let sid):
             guard let h = model.closed.first(where: { $0.sessionId == sid }) else { return [] }
             return [
-                DeckAction(title: "Resume in iTerm", key: "⏎") { model.resumeInTerminal(h) },
+                DeckAction(title: "Resume in \(TerminalApp.current.title)", key: "⏎") { model.resumeInTerminal(h) },
                 DeckAction(title: previewing == sid ? "Hide preview" : "Preview") {
                     withAnimation(Motion.snappy(reduceMotion)) { previewing = previewing == sid ? nil : sid }
                 },
@@ -917,7 +952,7 @@ struct MenuView: View {
         switch (s.isOnPhone, s.kind) {
         case (false, .interactive): return "Also open on phone"
         case (true, .interactive): return "Disconnect phone (keeps running)"
-        case (false, .background): return "Open in iTerm + phone"
+        case (false, .background): return "Open in \(TerminalApp.current.title) + phone"
         case (true, .background): return "Stop it (it's only on your phone)…"
         }
     }
@@ -954,7 +989,7 @@ struct ClosedPreview: View {
             Text(stats).foregroundStyle(.secondary)
             Text(Fmt.shortPath(session.cwd)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             HStack(spacing: 8) {
-                Button { model.resumeInTerminal(session) } label: { Label("Resume in iTerm", systemImage: "terminal") }
+                Button { model.resumeInTerminal(session) } label: { Label("Resume in \(TerminalApp.current.title)", systemImage: "terminal") }
                     .buttonStyle(.borderedProminent)
                 Button("Rename…", action: rename)
                 Button("Delete…", role: .destructive, action: delete)
@@ -982,6 +1017,8 @@ struct NewSessionPanel: View {
     @Binding var isShown: Bool
     @State private var folder: String?
     @State private var name = ""
+    @State private var isRepo = false
+    @AppStorage("newInWorktree") private var worktree = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -992,9 +1029,18 @@ struct NewSessionPanel: View {
             if let folder { Text(Fmt.shortPath(folder)).font(.subheadline).foregroundStyle(.secondary) }
             Text("Name (optional)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             TextField("e.g. fix-login", text: $name).textFieldStyle(.roundedBorder)
+            if isRepo {
+                Toggle(isOn: $worktree) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Work in a new worktree")
+                        Text("Its own branch and folder, so it can't touch your checkout").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch).controlSize(.small)
+            }
             HStack {
                 Spacer()
-                Button { start(phone: false) } label: { Label("Open in iTerm", systemImage: "terminal") }
+                Button { start(phone: false) } label: { Label("Open in \(TerminalApp.current.title)", systemImage: "terminal") }
                 Button { start(phone: true) } label: { Label("Start for phone", systemImage: "iphone") }
                     .buttonStyle(.borderedProminent)
             }
@@ -1004,11 +1050,16 @@ struct NewSessionPanel: View {
         }
         .padding(8)
         .onAppear { folder = folder ?? model.recentFolders.first }
+        .task(id: folder) {
+            guard let f = folder else { isRepo = false; return }
+            isRepo = await Task.detached { Git.branch(f) != nil }.value
+        }
     }
 
     private func start(phone: Bool) {
         guard let folder else { return }
-        if phone { model.newOnPhone(folder: folder, name: name) } else { model.newInTerminal(folder: folder, name: name) }
+        let w = isRepo && worktree
+        if phone { model.newOnPhone(folder: folder, name: name, worktree: w) } else { model.newInTerminal(folder: folder, name: name, worktree: w) }
         isShown = false
         name = ""
     }
