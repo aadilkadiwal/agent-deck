@@ -49,7 +49,7 @@ public struct ClaudeCLI: Sendable {
                 + (worktree ? " -w" + (n.isEmpty ? "" : " \(quote(slug(n)))") : "")
         }
         /// Worktree and branch names can't hold spaces or most punctuation.
-        static func slug(_ name: String) -> String {
+        public static func slug(_ name: String) -> String {
             let s = name.lowercased().map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-" }
             return String(s).split(separator: "-", omittingEmptySubsequences: true).joined(separator: "-")
         }
@@ -260,7 +260,7 @@ public struct ClaudeCLI: Sendable {
         guard let pid = s.pid else { return "It runs without a window." }
         switch owningApp(pid: pid)?.bundleIdentifier {
         case SessionWindow.itermBundleId: return nil
-        case let other: return "Runs in \(other.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.deletingPathExtension().lastPathComponent } ?? "an app") that Agent Deck can't type into."
+        case let other: return "This one is in \(other.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.deletingPathExtension().lastPathComponent } ?? "another app"). Agent Deck can only type into iTerm tabs."
         }
     }
 

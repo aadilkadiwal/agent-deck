@@ -46,7 +46,7 @@ struct DetailsView: View {
         NavigationSplitView {
             List(selection: selection) {
                 sidebarRow(.tab(.sessions), "All sessions", "list.bullet", trailing: "\(model.live.count + model.closed.count)")
-                sidebarRow(.tab(.waiting), "Waiting", "hourglass", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
+                sidebarRow(.tab(.waiting), "Waiting", "exclamationmark.circle", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
                 sidebarRow(.tab(.usage), "Usage", "chart.xyaxis.line")
                 if !projects.isEmpty {
                     Section("Projects") {
@@ -146,7 +146,7 @@ struct DetailsView: View {
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
                 Label("Hooks need repair", systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(Tone.warnText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
@@ -250,7 +250,7 @@ struct StatusPill: View {
     var body: some View {
         Group {
             if row.isClosed {
-                Text(row.status).foregroundStyle(.tertiary)
+                Text(row.status).foregroundStyle(.secondary)
             } else {
                 Text(row.status)
                     .padding(.horizontal, 8).padding(.vertical, 2)
@@ -272,6 +272,8 @@ struct SessionsTab: View {
     @State private var selection = Set<String>()
     @State private var pendingDelete: [HistorySession]?
     @State private var renaming: SessionRow?
+    @State private var stopping: LiveSession?
+    @State private var inspectorHidden = false
     @State private var sortOrder = [KeyPathComparator(\SessionRow.lastActive, order: .reverse)]
     @State private var sparkle = false
     @SceneStorage("sessionColumns") private var columns = TableColumnCustomization<SessionRow>()
@@ -315,7 +317,7 @@ struct SessionsTab: View {
         }
         .padding(12)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if pendingDelete != nil || renaming != nil || selection.count > 1 {
+            if pendingDelete != nil || renaming != nil || stopping != nil || selection.count > 1 {
                 bottomBar
                     .confirmBar()
                     .padding([.horizontal, .bottom], 12)
@@ -325,7 +327,8 @@ struct SessionsTab: View {
         .animation(Motion.spring(reduced: reduceMotion), value: selection.count > 1)
         .animation(Motion.spring(reduced: reduceMotion), value: pendingDelete?.map(\.sessionId))
         .animation(Motion.spring(reduced: reduceMotion), value: renaming?.id)
-        .inspector(isPresented: Binding(get: { selectedRow != nil }, set: { if !$0 { selection = [] } })) {
+        .animation(Motion.spring(reduced: reduceMotion), value: stopping?.id)
+        .inspector(isPresented: Binding(get: { selectedRow != nil && !inspectorHidden }, set: { if !$0 { selection = [] } })) {
             if let r = selectedRow {
                 Inspector(row: r, primary: primary(for: r)) { actions(for: r, includeOpen: false) }
                     .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
@@ -352,11 +355,13 @@ struct SessionsTab: View {
     private func controls(_ all: [SessionRow]) -> some View {
         let scoped = all.filter { project == nil || $0.folder == project }
         return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
             Picker("", selection: $filter) {
-                ForEach(SessionFilter.allCases) { f in Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f) }
+                ForEach(SessionFilter.allCases.filter { f in f == .all || f == filter || scoped.contains(where: f.matches) }) { f in
+                    Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f)
+                }
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
-            HStack(spacing: 14) {
                 let empty = model.emptySessions.filter { project == nil || $0.cwd == project }
                 if !empty.isEmpty {
                     Button { pendingDelete = empty } label: {
@@ -412,7 +417,7 @@ struct SessionsTab: View {
             .customizationID("branch")
             TableColumn("Time", value: \.durationSort) { r in
                 if let s = r.live {
-                    Text("running \(Fmt.span(Date().timeIntervalSince(s.startedAt)))").monospacedDigit()
+                    Text("open \(Fmt.span(Date().timeIntervalSince(s.startedAt)))").monospacedDigit()
                         .help("Open since \(Fmt.clock(s.startedAt))")
                 } else {
                     Text(r.duration.map(Fmt.duration) ?? "—").monospacedDigit().foregroundStyle(r.duration == nil ? .tertiary : .primary)
@@ -435,17 +440,6 @@ struct SessionsTab: View {
             }
             .width(min: 70, ideal: 76)
                 .customizationID("size")
-            TableColumn("") { r in
-                if r.isClosed, let h = r.saved {
-                    Button { pendingDelete = [h] } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
-                        .help("Delete this session")
-                }
-            }
-            .width(28)
-            .customizationID("delete")
-            .disabledCustomizationBehavior(.all)
         } rows: {
             if !running.isEmpty {
                 Section("Running · \(running.count)") { ForEach(running) { TableRow($0) } }
@@ -467,6 +461,16 @@ struct SessionsTab: View {
         }
         .onDeleteCommand {
             if !selectedClosed.isEmpty { pendingDelete = selectedClosed }
+        }
+        .onKeyPress(.return) {
+            guard selection.count == 1, let r = all.first(where: { selection.contains($0.id) }) else { return .ignored }
+            open(r)
+            return .handled
+        }
+        .onKeyPress(.space) {
+            guard selection.count == 1 else { return .ignored }
+            withAnimation(Motion.spring(reduced: reduceMotion)) { inspectorHidden.toggle() }
+            return .handled
         }
     }
 
@@ -498,6 +502,10 @@ struct SessionsTab: View {
         HStack {
             if let pending = pendingDelete {
                 DeleteConfirm(model: model, sessions: pending) { pendingDelete = nil }
+            } else if let s = stopping {
+                ConfirmRow(message: s.state == .blocked ? "\(model.displayName(s)) is waiting for your answer. Stop it anyway?"
+                                    : s.isOnPhone ? "Stop \(model.displayName(s))? It closes on your phone too." : "Stop \(model.displayName(s))?",
+                           confirmTitle: "Stop", destructive: true, cancel: { stopping = nil }) { stopping = nil; model.stop(s) }
             } else if let r = renaming {
                 Text("Rename \(r.name):").lineLimit(1)
                 RenameField(initial: r.name) { name in
@@ -540,12 +548,14 @@ struct SessionsTab: View {
                     .disabled(s.state != .idle || model.typingBlockers[s.sessionId] != nil)
             }
             if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keep running)") { model.phoneOff(s) } }
-            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in \(TerminalApp.current.title) + phone") { model.phoneOn(s) } }
+            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in \(TerminalApp.current.title) and phone") { model.phoneOn(s) } }
             if let url = s.phoneURL {
                 Button("Copy phone link") { copy(url.absoluteString) }
                 Button("Open on claude.ai") { NSWorkspace.shared.open(url) }
             }
-            Button(s.isLeftover ? "Clear old entry" : "Stop") { model.stop(s) }
+            Button(s.isLeftover ? "Remove from list…" : "Stop…") {
+                if s.isLeftover || s.state == .idle { model.stop(s) } else { stopping = s }
+            }
         } else if let h = r.saved {
             if includeOpen { Button("Resume in \(TerminalApp.current.title)") { model.resumeInTerminal(h) } }
             Button("Delete…", role: .destructive) { pendingDelete = [h] }
@@ -698,7 +708,7 @@ struct ConversationView: View {
             } else {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if c.dropped > 0 {
-                        Text("\(Fmt.count(c.dropped, "earlier entry")) not shown").font(.subheadline).foregroundStyle(.tertiary)
+                        Text("\(Fmt.count(c.dropped, "earlier entry")) not shown").font(.subheadline).foregroundStyle(.secondary)
                     }
                     ForEach(c.entries) { entry($0) }
                 }
@@ -967,7 +977,7 @@ struct UsageChart: View {
                     ForEach(resets, id: \.self) { r in
                         RuleMark(x: .value("Reset", r)).foregroundStyle(Color.gray.opacity(0.45))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                            .annotation(position: .top, spacing: 2) { Text("reset").font(.caption).foregroundStyle(.tertiary) }
+                            .annotation(position: .top, spacing: 2) { Text("reset").font(.caption).foregroundStyle(.secondary) }
                     }
                     ForEach(pieces) { p in
                         AreaMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
@@ -987,7 +997,7 @@ struct UsageChart: View {
                         PointMark(x: .value("Time", eta), y: .value("Used", 100))
                             .foregroundStyle(Color.orange)
                             .annotation(position: .leading) {
-                                Text("100% at \(Fmt.clock(eta))").font(.subheadline.weight(.medium)).foregroundStyle(.orange)
+                                Text("100% at \(Fmt.clock(eta))").font(.subheadline.weight(.medium)).foregroundStyle(Tone.warnText)
                             }
                     }
                 }
@@ -1080,7 +1090,7 @@ struct UsageHeatmapView: View {
         .task(id: "\(samples.count)-\(samples.last?.at.timeIntervalSince1970 ?? 0)") { map = UsageHeatmap.compute(samples) }
     }
 
-    private func heat(_ x: Double) -> Color { x >= 0.75 ? Color.orange.opacity(0.45 + 0.55 * x) : Color.gray.opacity(0.2 + 0.6 * x) }
+    private func heat(_ x: Double) -> Color { Color.primary.opacity(0.1 + 0.75 * x) }
 
     private func summary(_ m: UsageHeatmap) -> String {
         let busiest = m.busiest.map { "Busiest: \($0.day) \(hour($0.from))–\(hour($0.to))." } ?? ""

@@ -23,6 +23,9 @@ struct MenuView: View {
     @State private var needsYouHeight: CGFloat = 0
     @State private var sessionsHeight: CGFloat = 0
     @AppStorage("onboarded") private var onboarded = false
+    @AppStorage(Notifier.snoozeKey) private var snoozeTime = 0.0
+    @State private var hoveredCount: LiveSession.State?
+    @State private var replyContext: String?
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
     @FocusState private var searchFocused: Bool
     @FocusState private var listFocused: Bool
@@ -105,15 +108,16 @@ struct MenuView: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 0) {
-                healthBanner
                 header
+                healthBanner
                 if let st = model.serviceStatus { statusBanner(st).padding(.bottom, 8).transition(slide(from: .top)) }
                 if confirm == .stopIdle { confirmBar(.stopIdle).padding(.bottom, 8).transition(slide(from: .top)) }
                 if urgent && !showingNew {
                     needsYou.transition(.opacity.combined(with: .move(edge: .top)))
-                } else if !onboarded {
-                    WelcomeCard(model: model) { withAnimation(Motion.spring(reduced: reduceMotion)) { onboarded = true } }
                 } else {
+                    if !onboarded {
+                        WelcomeCard(model: model) { withAnimation(Motion.spring(reduced: reduceMotion)) { onboarded = true } }.padding(.bottom, 8)
+                    }
                     usage
                 }
                 Divider().padding(.vertical, 8)
@@ -184,13 +188,16 @@ struct MenuView: View {
                     .keyboardShortcut("1").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 Button("") { tab = .recent }
                     .keyboardShortcut("2").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
-                // ⌘⌫ is a key equivalent, so onKeyPress never sees it. In a text field it keeps its usual job.
+                // ⌘⌫ and ⌘. are key equivalents, so onKeyPress never sees them. ⌘⌫ only ever denies a prompt
+                // (in a text field it keeps its usual job); stopping a session is ⌘., so one chord never means two things.
                 Button("") {
                     if typing { NSApp.sendAction(#selector(NSResponder.deleteToBeginningOfLine(_:)), to: nil, from: nil); return }
-                    guard !actionsOpen else { return }
-                    if case .card(let id) = cursor { _ = denyCard(id) } else { _ = rowKey("\u{7F}", command: true) }
+                    guard !actionsOpen, case .card(let id) = cursor else { return }
+                    _ = denyCard(id)
                 }
                 .keyboardShortcut(.delete, modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+                Button("") { if !actionsOpen && !typing { _ = rowKey(".", command: true) } }
+                    .keyboardShortcut(".", modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             }
             .onAppear {
                 model.menuOpen = true
@@ -293,15 +300,18 @@ struct MenuView: View {
         let waiting = cards.count + waitingRows.count
         let hit = model.limitHit
         return HStack(spacing: 10) {
-            Dot(mood: allClear ? .done : model.mood(for: model.closestWindow), percent: model.shownPercent, size: 36, celebrate: false)
-                .onTapGesture { showDetails(tab: .usage) }
-                .help("Dot's rim is your closest limit. Click for usage details.")
+            Button { showDetails(tab: .usage) } label: {
+                Dot(mood: allClear ? .done : model.mood(for: model.closestWindow), percent: model.shownPercent, size: 36, celebrate: false)
+            }
+            .buttonStyle(.plain)
+            .help("Dot's rim is your closest limit. Click for usage details.")
+            .accessibilityLabel("Usage details")
             VStack(alignment: .leading, spacing: 1) {
                 if urgent {
                     Text("\(Fmt.count(waiting, waitingRows.isEmpty ? "prompt" : "session")) waiting").font(.body.weight(.semibold))
                     counts(otherwise: "Nothing else running")
                 } else if let hit, only == nil {
-                    Text("Limit reached").font(.body.weight(.semibold)).foregroundStyle(.red)
+                    Text("Limit reached").font(.body.weight(.semibold)).foregroundStyle(Tone.riskText)
                     HStack(spacing: 0) {
                         Text("Back at \(hit.resetsAt.map(Fmt.clock) ?? "reset")").foregroundStyle(.secondary)
                         if model.live.contains(where: { !$0.isLeftover }) { Text(" · ").foregroundStyle(.secondary); counts(otherwise: "") }
@@ -310,9 +320,15 @@ struct MenuView: View {
                 } else {
                     counts(otherwise: "No sessions running").font(.body.weight(.semibold))
                     Group {
-                        if only != nil { Text("Esc shows everything") }
-                        else if allClear { Text("All clear").foregroundStyle(.green) }
-                        else { Text("Nothing needs you") }
+                        if let only { Text("Showing \(only == .busy ? "working" : only == .idle ? "idle" : "waiting") sessions · Esc for all") }
+                        else if allClear { Text("All clear").foregroundStyle(Tone.okText) }
+                        else if let until = Notifier.snoozedUntil(snoozeTime) {
+                            Button { Notifier.snooze(for: nil) } label: {
+                                Label("Alerts snoozed until \(Fmt.clock(until)) · Resume", systemImage: "bell.slash")
+                            }
+                            .buttonStyle(.plain).help("Turn alerts back on")
+                        }
+                        else { Text("Nothing needs you" + (model.keepsAwake ? " · keeping the Mac awake" : "")) }
                     }
                     .font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -351,13 +367,18 @@ struct MenuView: View {
         return Button {
             withAnimation(Motion.snappy(reduceMotion)) { only = on ? nil : state; cursor = nil }
         } label: {
-            Text("\(n) \(word)").monospacedDigit()
-                .contentTransition(.numericText(value: Double(n)))
-                .padding(.horizontal, on ? 6 : 0)
-                .background(Capsule().fill(on ? Color.accentColor.opacity(0.2) : .clear))
-                .contentShape(Rectangle())
+            HStack(spacing: 3) {
+                Text("\(n) \(word)").monospacedDigit()
+                    .contentTransition(.numericText(value: Double(n)))
+                if on { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, on || hoveredCount == state ? 6 : 0)
+            .background(Capsule().fill(Color.primary.opacity(on ? 0.12 : hoveredCount == state ? 0.07 : 0)))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredCount = $0 ? state : (hoveredCount == state ? nil : hoveredCount) }
+        .animation(Motion.fast(reduceMotion), value: hoveredCount)
         .contextMenu {
             if state == .idle {
                 Button("Stop \(Fmt.count(n, "idle session"))…") { confirm = .stopIdle }
@@ -372,10 +393,17 @@ struct MenuView: View {
         return VStack(alignment: .leading, spacing: 8) {
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(cards) {
-                        ApprovalCard(model: model, request: $0, selected: cursor == .card($0.id))
-                            .id(Item.card($0.id))
-                            .transition(ApprovalCard.transition(model.outcomes[$0.id], reduced: reduceMotion))
+                    let focus: Int? = { if case .card(let id) = cursor, cards.contains(where: { $0.id == id }) { return id }; return cards.first?.id }()
+                    ForEach(cards) { r in
+                        Group {
+                            if r.id == focus || cards.count == 1 {
+                                ApprovalCard(model: model, request: r, selected: cursor == .card(r.id))
+                            } else {
+                                QueuedCard(model: model, request: r) { withAnimation(Motion.snappy(reduceMotion)) { cursor = .card(r.id) } }
+                            }
+                        }
+                        .id(Item.card(r.id))
+                        .transition(ApprovalCard.transition(model.outcomes[r.id], reduced: reduceMotion))
                     }
                     ForEach(waitingRows) { s in liveRow(s) }
                     if cards.isEmpty && waitingRows.isEmpty {
@@ -389,7 +417,6 @@ struct MenuView: View {
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { needsYouHeight = $0 }
             .onDisappear { needsYouHeight = 0 }
-            HotkeyHint(model: model).padding(.horizontal, 8)
         }
     }
 
@@ -436,7 +463,7 @@ struct MenuView: View {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")")!)
                 } label: {
                     Label("Notifications are off, so you won't hear about limits. Turn them on", systemImage: "bell.slash")
-                        .font(.subheadline).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.subheadline).foregroundStyle(Tone.warnText).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain).padding(.horizontal, 8).padding(.top, 6)
             }
@@ -494,7 +521,7 @@ struct MenuView: View {
             }
             if tabsShown {
                 Picker("", selection: $tab) {
-                    Text("Running \(running.count)").tag(ListTab.running)
+                    Text("Running").tag(ListTab.running)
                     Text("Recent").tag(ListTab.recent)
                 }
                 .pickerStyle(.segmented).labelsHidden()
@@ -606,11 +633,12 @@ struct MenuView: View {
             let place = Fmt.place(s.cwd, branch: model.branches[s.cwd], name: model.displayName(s), grouped: grouped)
             let context = model.context[s.sessionId].flatMap { $0.percent >= ContextBar.warnAt ? $0 : nil }
             HoverRow(selected: cursor == .live(s.sessionId)) {
-                StateDot(state: s.isLeftover ? nil : s.state, animated: model.menuOpen)
+                StateDot(state: s.isLeftover ? nil : s.state, animated: model.menuOpen
+                         && (s.state != .busy || model.count(.busy) <= 1 || cursor == .live(s.sessionId) || hoveredRow == s.sessionId))
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(highlighted(model.displayName(s), search)).font(.body.weight(waiting ? .semibold : .medium)).lineLimit(1)
-                        if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(.secondary).help("On your phone") }
+                        if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 12)).foregroundStyle(.secondary).help("On your phone") }
                         if s.kind == .background { Pill(text: "Background").help("Background session: it runs without a terminal window") }
                     }
                     if model.isStoppedAtLimit(s) {
@@ -689,12 +717,14 @@ struct MenuView: View {
     }
 
     private func statusBanner(_ st: ServiceStatus) -> some View {
-        Callout(tint: .orange) {
-            Text("\(st.text) Slow or failed replies are likely on Anthropic's side.").fixedSize(horizontal: false, vertical: true)
+        Callout(tint: .secondary) {
+            Image(systemName: "exclamationmark.icloud").foregroundStyle(.orange)
+            Text(st.text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
-            Button("Details") { NSWorkspace.shared.open(st.link) }.controlSize(.small)
+            Button("Status page ↗") { NSWorkspace.shared.open(st.link) }.controlSize(.small)
         }
         .font(.subheadline)
+        .help("Slow or failed replies are likely on Anthropic's side, not your session.")
     }
 
     private func blocker(_ s: LiveSession, _ verb: String) -> String? {
@@ -714,7 +744,7 @@ struct MenuView: View {
             if s.kind == .background { unavailable("It runs without a window, so it can't be renamed here.") }
             else if let why = model.typingBlockers[sid] { unavailable(why) } else { confirm = .renameLive(s) }
         case "m": if let why = replyBlocker(s) { unavailable(why) } else { confirm = .reply(s) }
-        case "\u{7F}" where command: confirm = .stop(s)
+        case "." where command: confirm = .stop(s)
         default: return .ignored
         }
         return .handled
@@ -753,8 +783,8 @@ struct MenuView: View {
             }
             Spacer(minLength: 4)
             Text(Fmt.ago(h.lastActive)).font(.subheadline).foregroundStyle(.secondary)
-            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                .rotationEffect(.degrees(open ? 90 : 0))
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                .rotationEffect(.degrees(open ? 180 : 0))
         } action: {
             withAnimation(Motion.snappy(reduceMotion)) { previewing = open ? nil : h.sessionId }
             cursor = .closed(h.sessionId)
@@ -779,8 +809,8 @@ struct MenuView: View {
             }
             if let c = confirm, c.sessionId == h.sessionId { confirmBar(c).transition(slide(from: .top)) }
         }
-        .background { if open { RoundedRectangle(cornerRadius: Radius.row).fill(Color.accentColor.opacity(0.06)) } }
-        .overlay { if open { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1.25) } }
+        .background { if open { RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)) } }
+        .overlay { if open { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.3), lineWidth: 1) } }
         .id(Item.closed(h.sessionId))
     }
 
@@ -802,7 +832,7 @@ struct MenuView: View {
                                     : s.state == .blocked ? "It's waiting for your answer. Stop it anyway?"
                                     : s.kind == .background && s.isOnPhone ? "It runs only on your phone. Stop it?"
                                     : s.isOnPhone ? "Stop it? It closes on your phone too." : "Stop this session?",
-                           confirmTitle: s.isLeftover ? "Clear" : "Stop", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
+                           confirmTitle: s.isLeftover ? "Remove" : "Stop", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
             case .stopIdle:
                 let idle = model.live.filter { $0.state == .idle && !$0.isLeftover }
                 ConfirmRow(message: "Stop \(Fmt.count(idle.count, "idle session"))? You can resume any of them from Recent.",
@@ -822,12 +852,16 @@ struct MenuView: View {
                 }
             case .reply(let s):
                 VStack(alignment: .leading, spacing: 4) {
+                    if let replyContext {
+                        Text("Claude: \(replyContext)").font(.subheadline).foregroundStyle(.secondary).lineLimit(2).help(replyContext)
+                    }
                     HStack(spacing: 8) {
                         ReplyField(queued: s.state == .busy) { text in confirm = nil; if let text { model.reply(s, text) } }
                     }
-                    Text(s.state == .busy ? "It's working, so this goes out when it finishes." : "Types it into its iTerm tab and presses Return.")
+                    Text(s.state == .busy ? "It's working, so this goes out when it finishes · Esc cancels" : "Types it into its terminal tab and presses Return · Esc cancels")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
+                .task(id: s.sessionId) { replyContext = await model.lastReplyLine(s.sessionId) }
             case .renameClosed(let h):
                 HStack(spacing: 8) {
                     RenameField(initial: h.name) { name in confirm = nil; if let name { model.rename(h, to: name) } }
@@ -843,24 +877,46 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let cursor {
                 let onCard: Bool = { if case .card = cursor { return true }; return false }()
-                Text(onCard ? "↑↓ move · ⌘⏎ approve · ⌘⌫ deny · 1–4 answer · ⌘K" : "↑↓ move · ⏎ open · ⌘K actions")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                let hint = onCard ? cardHint : "↑↓ move · ⏎ open · ⌘K actions"
+                Text(hint)
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     .padding(.horizontal, 8)
                     .transition(.opacity)
-                    .accessibilityLabel(onCard ? "Keyboard: arrows move, Command Return approves, Command Delete denies, 1 to 4 answer, Command K shows all actions"
-                                               : "Keyboard: arrows move, Return opens, Command K shows all actions")
+                    .accessibilityLabel("Keyboard: " + Self.spoken(hint))
             }
             HStack {
                 Button { showingNew.toggle() } label: { Label(showingNew ? "Back" : "New session…", systemImage: showingNew ? "chevron.left" : "plus") }
                     .keyboardShortcut("n")
                 Spacer()
                 Button("View details…") { showDetails(tab: .sessions) }
-                IconButton(symbol: "gearshape", help: "Settings (⌘,)") { settings() }
-                IconButton(symbol: "power", help: "Quit Agent Deck") { NSApp.terminate(nil) }
+                Menu {
+                    Button("Settings…") { settings() }
+                    Button("Snooze alerts for 1 hour") { Notifier.snooze(for: 3600) }
+                    Divider()
+                    Button("Quit Agent Deck") { NSApp.terminate(nil) }
+                } label: { Image(systemName: "gearshape") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Settings, snooze and quit")
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 8)
         }
+    }
+
+    private var cardHint: String {
+        guard case .card(let id) = cursor, let r = model.approvals.first(where: { $0.id == id }) else { return "↑↓ move · ⌘K actions" }
+        switch r.kind {
+        case .question: return "↑↓ move · 1–\(min(4, r.questions.first?.options.count ?? 4)) pick an answer · ⌃⌥J show"
+        case .plan: return "↑↓ move · ⌘⏎ approve plan · ⌘K more · ⌃⌥J show"
+        case .permission:
+            return r.risk == nil ? "⌘⏎ allow · ⌘⌫ deny · ⌘K more · ⌃⌥A ⌃⌥D ⌃⌥J anywhere" : "⌘⌫ deny · allowing it takes a click · ⌃⌥J show"
+        }
+    }
+
+    static func spoken(_ hint: String) -> String {
+        [("⌃⌥", "Control Option "), ("⌘⏎", "Command Return"), ("⌘⌫", "Command Delete"), ("⌘K", "Command K"),
+         ("↑↓", "arrows"), ("⏎", "Return"), (" · ", ", ")]
+            .reduce(hint) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
     }
 
     private func openActions() {
@@ -931,7 +987,10 @@ struct MenuView: View {
             }
             if let url = s.phoneURL { list.append(DeckAction(title: "Copy phone link") { copy(url.absoluteString) }) }
             list.append(DeckAction(title: "Copy session ID") { copy(s.sessionId) })
-            list.append(DeckAction(title: s.isLeftover ? "Remove from list…" : "Stop session…", key: "⌘⌫", destructive: true,
+            if s.state == .idle && !s.isLeftover && model.count(.idle) > 1 {
+                list.append(DeckAction(title: "Stop all \(model.count(.idle)) idle sessions…", destructive: true) { confirm = .stopIdle })
+            }
+            list.append(DeckAction(title: s.isLeftover ? "Remove from list…" : "Stop session…", key: "⌘.", destructive: true,
                                    unavailable: working) { confirm = .stop(s) })
             return list
         case .closed(let sid):
@@ -952,7 +1011,7 @@ struct MenuView: View {
         switch (s.isOnPhone, s.kind) {
         case (false, .interactive): return "Also open on phone"
         case (true, .interactive): return "Disconnect phone (keeps running)"
-        case (false, .background): return "Open in \(TerminalApp.current.title) + phone"
+        case (false, .background): return "Open in \(TerminalApp.current.title) and phone"
         case (true, .background): return "Stop it (it's only on your phone)…"
         }
     }
@@ -1018,38 +1077,42 @@ struct NewSessionPanel: View {
     @State private var folder: String?
     @State private var name = ""
     @State private var isRepo = false
-    @AppStorage("newInWorktree") private var worktree = false
+    @State private var worktree = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("New session").font(.body.weight(.semibold))
-            Text("FOLDER").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Folder").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             FlowChips(items: model.recentFolders, selected: $folder)
-            Button("Browse…") { browse() }.controlSize(.small)
-            if let folder { Text(Fmt.shortPath(folder)).font(.subheadline).foregroundStyle(.secondary) }
-            Text("Name (optional)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-            TextField("e.g. fix-login", text: $name).textFieldStyle(.roundedBorder)
-            if isRepo {
+            HStack(spacing: 6) {
+                if let folder { Text(Fmt.shortPath(folder)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
+                Spacer(minLength: 4)
+                Button("Other folder…") { browse() }.controlSize(.small)
+            }
+            if isRepo, let folder {
                 Toggle(isOn: $worktree) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Work in a new worktree")
-                        Text("Its own branch and folder, so it can't touch your checkout").font(.subheadline).foregroundStyle(.secondary)
+                        Text(worktree ? "New worktree: \(Fmt.folderTitle(folder))/\(name.isEmpty ? "named by Claude" : ClaudeCLI.ShellLine.slug(name))"
+                                      : "Its own branch and folder, so it can't touch your checkout")
+                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .toggleStyle(.switch).controlSize(.small)
             }
+            Text("Name").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            TextField("Optional, like fix-login", text: $name).textFieldStyle(.roundedBorder)
             HStack {
+                Button { start(phone: true) } label: { Label("Start on phone", systemImage: "iphone") }
+                    .help("Opens no window here. It shows up in the Claude app a few seconds later.")
                 Spacer()
                 Button { start(phone: false) } label: { Label("Open in \(TerminalApp.current.title)", systemImage: "terminal") }
-                Button { start(phone: true) } label: { Label("Start for phone", systemImage: "iphone") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
             .disabled(folder == nil || model.working.contains("new"))
-            Text("Start for phone opens no window here. The session shows up in the Claude app a few seconds later.")
-                .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(8)
-        .onAppear { folder = folder ?? model.recentFolders.first }
+        .onAppear { folder = folder ?? model.recentFolders.first; worktree = false }
         .task(id: folder) {
             guard let f = folder else { isRepo = false; return }
             isRepo = await Task.detached { Git.branch(f) != nil }.value
@@ -1086,8 +1149,8 @@ struct FlowChips: View {
                     Text(Fmt.folderTitle(f)).font(.subheadline).lineLimit(1).truncationMode(.middle)
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Capsule().fill(selected == f ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1)))
-                        .overlay(Capsule().stroke(selected == f ? Color.accentColor : .clear))
+                        .background(Capsule().fill(Color.primary.opacity(selected == f ? 0.16 : 0.07)))
+                        .overlay(Capsule().stroke(selected == f ? Color.primary.opacity(0.5) : .clear))
                 }
                 .buttonStyle(.plain)
                 .help(f)
@@ -1101,9 +1164,9 @@ struct BannerView: View {
 
     var body: some View {
         if let b = model.banner {
-            Callout(tint: b.isError ? .orange : .green, alignment: .top) {
+            Callout(tint: b.blocking ? .red : b.isError ? .orange : .green, alignment: .top) {
                 Image(systemName: b.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(b.isError ? .orange : .green)
+                    .foregroundStyle(b.blocking ? .red : b.isError ? .orange : .green)
                 Text(b.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if let title = b.actionTitle, let action = b.action {
@@ -1190,7 +1253,7 @@ struct DeleteConfirm: View {
             Spacer(minLength: 4)
             switch f.state {
             case .inGit: Label("in git, kept", systemImage: "lock.fill").foregroundStyle(.secondary)
-            case .changedSince: Label("changed since", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            case .changedSince: Label("changed since", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Tone.warnText)
             case .untracked: Text("untracked").foregroundStyle(.secondary)
             }
             if !compact { Text(Fmt.bytes(f.bytes)).monospacedDigit().foregroundStyle(.secondary).frame(width: 60, alignment: .trailing) }
@@ -1230,9 +1293,11 @@ struct ActionPanel: View {
     var body: some View {
         let list = shown
         VStack(alignment: .leading, spacing: 0) {
-            TextField("Actions for \(title)…", text: $query)
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                .padding(.horizontal, 10).padding(.top, 8)
+            TextField("Actions", text: $query)
                 .textFieldStyle(.plain).font(.body)
-                .padding(.horizontal, 10).padding(.vertical, 8)
+                .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 8)
                 .focused($focused)
                 .onKeyPress(.downArrow) { index = min(index + 1, max(list.count - 1, 0)); return .handled }
                 .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
@@ -1247,6 +1312,7 @@ struct ActionPanel: View {
                 ScrollView {
                     VStack(spacing: 1) {
                         ForEach(Array(list.enumerated()), id: \.offset) { i, a in
+                            if a.destructive && i > 0 && !list[i - 1].destructive { Divider().padding(.vertical, 3).padding(.horizontal, 6) }
                             Button { index = i; run(list) } label: {
                                 row(a, selected: i == index).contentShape(Rectangle())
                             }
@@ -1312,16 +1378,16 @@ struct WelcomeCard: View {
                 Dot(mood: .back, percent: model.shownPercent, size: 48, extras: false)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hi, I'm Dot").font(.body.weight(.semibold))
-                    Text("My rim is your usage limit, and my face shows what your sessions need.")
+                    Text("My rim is your usage limit, and my face shows what your sessions need. The tick on each bar below is how much of that window's time has passed.")
                         .foregroundStyle(.secondary)
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
                 setup
-                Label("⌘K on any row shows everything you can do", systemImage: "command")
+                Label("Press ⌘K on any row to see everything you can do", systemImage: "keyboard")
                 if menuHotkey != MenuHotkey.off.rawValue && model.menuHotkeyFailed {
                     Label("\(MenuHotkey(rawValue: menuHotkey)?.title ?? "The shortcut") is already used by another app. Pick another one in Settings → Shortcuts.",
-                          systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                          systemImage: "exclamationmark.triangle.fill").foregroundStyle(Tone.warnText)
                 }
             }
             HStack(spacing: 8) {
@@ -1346,13 +1412,16 @@ struct WelcomeCard: View {
     @ViewBuilder private var setup: some View {
         if model.health == nil {
             Label("Checking setup…", systemImage: "hourglass").foregroundStyle(.secondary)
+        } else if model.missingHooks.isEmpty && model.health?["error"] == nil && !model.approvalsOn {
+            Label("Prompts stay in the terminal. Turn on answering them here in Settings.", systemImage: "info.circle")
+                .foregroundStyle(.secondary)
         } else if model.missingHooks.isEmpty && model.health?["error"] == nil {
             Label("All set. You can answer prompts from here.", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(Tone.okText)
         } else {
             HStack(spacing: 8) {
                 Label("Setup needs a repair before prompts can show up here.", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Tone.warnText)
                 Button("Repair") { Task { await model.repairHooks() } }.controlSize(.small)
             }
         }

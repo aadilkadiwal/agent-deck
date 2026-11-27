@@ -45,12 +45,12 @@ struct Meter: View {
             Text(window.key == "five_hour" ? "5-hour" : window.label).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
             MeterBar(percent: pct, elapsed: elapsed)
             Text("\(Int(pct.rounded()))%").fontWeight(.semibold).monospacedDigit()
-                .foregroundStyle(pct >= Notifier.warnAt ? Level.color(pct) : .primary)
+                .foregroundStyle(Tone.text(pct))
                 .frame(width: 38, alignment: .trailing)
             Group {
-                if full, let r = window.resetsAt { Text("back \(Fmt.clock(r))").foregroundStyle(.red) }
-                else if let out { Text("out \(Fmt.clock(out))").foregroundStyle(.orange) }
-                else { Text(window.resetsAt.map { Fmt.clock($0).replacingOccurrences(of: ", ", with: " ") } ?? "").foregroundStyle(.secondary) }
+                if full, let r = window.resetsAt { Text("back \(Fmt.clock(r))").foregroundStyle(Tone.riskText) }
+                else if let out { Text("full ~\(Fmt.clock(out))").foregroundStyle(Tone.warnText) }
+                else { Text(window.resetsAt.map { Calendar.current.isDateInToday($0) ? "resets \(Fmt.clock($0))" : "resets \($0.formatted(.dateTime.weekday(.abbreviated)))" } ?? "").foregroundStyle(.secondary) }
             }
             .lineLimit(1).frame(width: 92, alignment: .leading)
         }
@@ -77,10 +77,10 @@ struct Meter: View {
         return s
     }
 
-    /// Used against time gone: ahead means using it faster than the window runs.
+    /// Used against time gone. Using less than the clock is headroom, not "behind".
     static func pace(_ pct: Double, _ elapsed: Double) -> String {
         let gone = Int((elapsed * 100).rounded()), diff = Int((pct - elapsed * 100).rounded())
-        let pace = abs(diff) < 3 ? "on pace" : diff > 0 ? "\(diff)% ahead of pace" : "\(-diff)% behind pace"
+        let pace = abs(diff) < 3 ? "on pace" : diff > 0 ? "using it faster than the clock" : "\(-diff) points of headroom"
         return "\(gone)% of the time gone, \(pace)"
     }
 }
@@ -97,12 +97,26 @@ struct MeterBar: View {
                 GeometryReader { g in
                     Capsule().fill(Level.color(percent)).frame(width: max(height, g.size.width * min(percent, 100) / 100))
                     if let elapsed {
-                        RoundedRectangle(cornerRadius: 1).fill(Color.primary.opacity(0.75))
-                            .frame(width: 2, height: height + 6)
-                            .offset(x: min(g.size.width - 2, max(0, g.size.width * elapsed - 1)), y: -3)
+                        RoundedRectangle(cornerRadius: 1).fill(Color.primary.opacity(0.55))
+                            .frame(width: 2, height: height + 4)
+                            .offset(x: min(g.size.width - 2, max(0, g.size.width * elapsed - 1)), y: -2)
                     }
                 }
             }
             .frame(height: height)
     }
+}
+
+enum Tone {
+    static let warnText = adaptive(light: (0.66, 0.33, 0.0), dark: (1.0, 0.62, 0.04))
+    static let riskText = adaptive(light: (0.79, 0.11, 0.08), dark: (1.0, 0.41, 0.38))
+    static let okText = adaptive(light: (0.11, 0.48, 0.23), dark: (0.19, 0.82, 0.35))
+
+    private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+    static func text(_ pct: Double) -> Color { pct >= LimitWindow.full ? riskText : pct >= Notifier.warnAt ? warnText : .primary }
 }

@@ -34,15 +34,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private var held: [Held] = []
 
     private struct Held {
-        let alert: PeekAlert, body: String, sessionId: String?, category: String?, info: [String: Any], at: Date
+        let alert: PeekAlert, title: String?, body: String, sessionId: String?, category: String?, info: [String: Any], at: Date
     }
 
-    static let snoozeKey = "alertsSnoozedUntil"
-    static var snoozedUntil: Date? {
-        (UserDefaults.standard.object(forKey: snoozeKey) as? Date).flatMap { $0 > Date() ? $0 : nil }
+    /// Seconds since 1970, so views can watch it with @AppStorage.
+    nonisolated static let snoozeKey = "alertsSnoozedUntilTime"
+    nonisolated static func snoozedUntil(_ t: Double = UserDefaults.standard.double(forKey: snoozeKey)) -> Date? {
+        t > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: t) : nil
     }
+    static var snoozedUntil: Date? { snoozedUntil() }
     static func snooze(for seconds: TimeInterval?) {
-        UserDefaults.standard.set(seconds.map { Date().addingTimeInterval($0) }, forKey: snoozeKey)
+        UserDefaults.standard.set(seconds.map { Date().timeIntervalSince1970 + $0 } ?? 0, forKey: snoozeKey)
     }
 
     private var focused: Bool { INFocusStatusCenter.default.focusStatus.isFocused == true }
@@ -58,7 +60,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         guard !held.isEmpty, !focused, Self.snoozedUntil == nil else { return }
         let due = held.filter { Date().timeIntervalSince($0.at) < 7200 }
         held = []
-        for h in due { post(h.alert, body: h.body, sessionId: h.sessionId, category: h.category, info: h.info) }
+        for h in due { post(h.alert, title: h.title, body: h.body, sessionId: h.sessionId, category: h.category, info: h.info) }
     }
 
     override init() {
@@ -104,9 +106,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 let did = awayLine?(sid)
                 Task { [weak self] in
                     let line = await self?.lastReply?(sid)
-                    let lines = [did, line].compactMap { $0 }
+                    let lines = [line, did].compactMap { $0 }
                     self?.post(PeekAlert(id: "done-\(sid)", kind: .done, title: title, meta: took, lines: lines, actions: actions, celebrate: big),
-                               body: ([took] + lines).joined(separator: "\n"), sessionId: sid)
+                               title: "\(title) is done",
+                               body: ([took.replacingOccurrences(of: "Done after", with: "Took")] + lines).joined(separator: " · "), sessionId: sid)
                 }
             }
             if s.state == .idle { busySince[s.sessionId] = nil }
@@ -116,7 +119,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     static func waitingText(_ waitingFor: String?) -> String {
-        guard let w = waitingFor, !w.isEmpty, w != "input needed" else { return "needs your answer" }
+        guard let w = waitingFor, !w.isEmpty, w != "input needed" else { return "waiting for you" }
         return "needs you: \(w)"
     }
 
@@ -192,10 +195,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// The reminder for a prompt nobody answered reuses its alert id, so answering clears either one.
     func stillWaiting(_ s: LiveSession, name: String, waited: TimeInterval) {
         guard enabled(Key.waiting) else { return }
-        let meta = "Still waiting · \(Fmt.span(waited))"
-        post(PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name, meta: meta, lines: [Self.waitingText(s.waitingFor)],
-                       actions: [show(s.sessionId)]),
-             body: "\(meta). \(Self.waitingText(s.waitingFor))", sessionId: s.sessionId)
+        let tag = "Still waiting · \(Fmt.span(waited))"
+        var alert = PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name, lines: [Self.waitingText(s.waitingFor)], actions: [show(s.sessionId)])
+        alert.tag = tag
+        alert.soft = true
+        post(alert, body: "\(tag). \(Self.waitingText(s.waitingFor))", sessionId: s.sessionId)
     }
 
     func approvalArrived(_ r: ApprovalRequest, name: String, waited: TimeInterval? = nil) {
@@ -204,10 +208,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         Peek.dismiss(id: "wait-\(r.sessionId)")
         guard enabled(Key.waiting) else { return }
         let title: String, body: String, category: String?
+        var bannerTitle: String?, bannerBody: String?
         switch r.kind {
         case .permission:
-            title = r.risk.map { "\(name) wants to run something that \($0)" } ?? "\(name) wants to use \(r.toolName)"
+            title = "\(name) wants to \(r.toolName == "Bash" ? "run" : "use") \(r.toolName)"
             body = r.detail.isEmpty ? (r.description ?? "") : r.detail
+            if let risk = r.risk { (bannerTitle, bannerBody) = ("Risky: \(title)", "\(body.prefix(240)) · \(risk)") }
             category = r.risk != nil ? "permission-risky" : r.alwaysLabel == nil ? "permission" : "permission-always"
         case .plan:
             (title, body, category) = ("\(name) has a plan for you", r.detail, "plan")
@@ -216,26 +222,35 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
         let decide = { [weak self] (a: ApprovalAnswer) -> Void in self?.onDecide?(r.id, a) }
         let review = { [weak self] () -> Void in self?.onReview?() }
-        var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title,
-                              meta: waited.map { "Still waiting · \(Fmt.span($0))" })
+        var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title)
+        alert.tag = waited.map { "Still waiting · \(Fmt.span($0))" } ?? r.risk.map { "Risky · \($0)" }
+        alert.soft = waited != nil
         switch r.kind {
         case .permission:
             alert.code = body
             alert.actions = r.risk != nil
-                ? [.init(title: "Deny", style: .primary, done: "Denied") { decide(.deny) },
-                   .init(title: "Allow once", style: .danger, done: "Allowed once") { decide(.allow(always: false)) }]
+                ? [.init(title: "Allow once", style: .danger, done: "Allowed once") { decide(.allow(always: false)) },
+                   .init(title: "Deny", style: .primary, done: "Denied") { decide(.deny) }]
                 : [.init(title: "Deny", done: "Denied") { decide(.deny) }]
                     + (r.alwaysLabel == nil ? [] : [.init(title: "For this session", done: "Allowed for this session") { decide(.allow(always: true)) }])
                     + [.init(title: "Allow", style: .primary, done: "Allowed") { decide(.allow(always: false)) }]
         case .plan:
-            alert.lines = Array(body.split(separator: "\n").map { $0.replacingOccurrences(of: #"^\s*#+\s*"#, with: "", options: .regularExpression) }
-                .filter { !$0.isEmpty }.prefix(3))
+            alert.lines = Array(body.split(separator: "\n").map {
+                $0.replacingOccurrences(of: #"^\s*#+\s*"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"^\s*[-*]\s+"#, with: "• ", options: .regularExpression)
+            }.filter { !$0.isEmpty }.prefix(3))
             alert.actions = [.init(title: "Review the plan", style: .primary, run: review)]
         case .question:
             alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))
-            alert.actions = [.init(title: "Answer", style: .primary, run: review)]
+            if r.questions.count == 1, let q = r.questions.first, !q.multiSelect, (2...3).contains(q.options.count),
+               q.options.allSatisfy({ $0.label.count <= 20 }) {
+                alert.actions = q.options.map { o in .init(title: o.label, done: "Answered") { decide(.answers([q.question: o.label])) } }
+                    + [.init(title: "More", style: .primary, run: review)]
+            } else {
+                alert.actions = [.init(title: "Answer", style: .primary, run: review)]
+            }
         }
-        post(alert, body: String(body.prefix(300)), sessionId: r.sessionId, category: category, info: ["approvalId": r.id])
+        post(alert, title: bannerTitle, body: bannerBody ?? String(body.prefix(300)), sessionId: r.sessionId, category: category, info: ["approvalId": r.id])
     }
 
     func approvalDone(_ id: Int) {
@@ -243,14 +258,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         Peek.dismiss(id: "approval-\(id)")
     }
 
-    private func post(_ alert: PeekAlert, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:]) {
+    /// `title` overrides the alert's title in the macOS banner, which has to make sense later in Notification Center.
+    private func post(_ alert: PeekAlert, title: String? = nil, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:]) {
         if Self.snoozedUntil != nil { return }
         var alert = alert
         // In a Focus a stuck session still gets through, without a sound; the rest waits for the Focus to end.
         if focused {
             guard alert.kind == .needs || alert.kind == .risky else {
                 held.removeAll { $0.alert.id == alert.id }
-                held.append(Held(alert: alert, body: body, sessionId: sessionId, category: category, info: info, at: Date()))
+                held.append(Held(alert: alert, title: title, body: body, sessionId: sessionId, category: category, info: info, at: Date()))
                 return
             }
             alert.quiet = true
@@ -258,7 +274,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         if peek?(alert) == true { return }
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
-        content.title = alert.title
+        content.title = title ?? alert.title
         content.body = body
         content.sound = alert.quiet ? nil : UNNotificationSound(named: UNNotificationSoundName("\(alert.kind.sound).wav"))
         if alert.kind.isLimit, let png = Dot.png(mood: alert.kind.mood, percent: alert.percent) {

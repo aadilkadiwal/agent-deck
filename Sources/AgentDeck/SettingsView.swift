@@ -2,7 +2,7 @@ import AgentDeckCore
 import SwiftUI
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general = "General", notifications = "Notifications", shortcuts = "Shortcuts", storage = "Storage", health = "Health"
+    case general = "General", notifications = "Alerts", shortcuts = "Shortcuts", storage = "Storage", health = "Health"
     var id: String { rawValue }
     static let key = "settingsPage"
 
@@ -28,8 +28,7 @@ struct SettingsView: View {
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
     @AppStorage(PeekPlacement.key) private var peekPlacement = PeekPlacement.automatic.rawValue
     @AppStorage(SettingsPage.key) private var page = SettingsPage.general.rawValue
-    @State private var warnAt = "\(Int(Notifier.warnAt))"
-    @FocusState private var warnFocused: Bool
+    @AppStorage(Notifier.Key.warnAt) private var warnLevel = 80.0
     @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.off.rawValue
     @StateObject private var updater = Updater()
     @State private var cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -47,8 +46,8 @@ struct SettingsView: View {
         LabeledContent(title) {
             Group {
                 switch state {
-                case "ok": Label("Working", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                case "missing": Label("Not set up", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                case "ok": Label("Working", systemImage: "checkmark.circle.fill").foregroundStyle(Tone.okText)
+                case "missing": Label("Not set up", systemImage: "exclamationmark.triangle.fill").foregroundStyle(Tone.warnText)
                 case "absent": Text("Not installed").foregroundStyle(.secondary)
                 default: ProgressView().controlSize(.small)
                 }
@@ -62,7 +61,7 @@ struct SettingsView: View {
         TabView(selection: Binding(get: { SettingsPage(rawValue: page) ?? .general }, set: { page = $0.rawValue })) {
             ForEach(SettingsPage.allCases) { p in
                 VStack(spacing: 0) {
-                    if p == .health || (p == .general && hooksBroken) { healthSummary.padding([.horizontal, .top], 20) }
+                    if hooksBroken && (p == .health || p == .general) { healthSummary.padding([.horizontal, .top], 20) }
                     Form {
                         switch p {
                         case .general: general
@@ -93,25 +92,26 @@ struct SettingsView: View {
             if model.menuHotkeyFailed {
                 Label("Another app already uses \((MenuHotkey(rawValue: menuHotkey) ?? .off).title), so it does nothing here. Pick a different one.",
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(Tone.warnText)
             }
         } header: { Text("Menu") } footer: {
             Note("Opens the menu with the newest prompt selected, so ⌘⏎ answers it and Esc closes it. Heads up: ⌃⌥Space also switches keyboard languages if you use more than one.")
         }
         Section {
-            LabeledContent("Allow the oldest permission prompt", value: "⌃⌥A")
-            LabeledContent("Deny the oldest permission prompt", value: "⌃⌥D")
-            LabeledContent("Show the session that has waited longest", value: "⌃⌥J")
+            LabeledContent("Allow the oldest permission prompt") { Keys("⌃⌥A") }
+            LabeledContent("Deny the oldest permission prompt") { Keys("⌃⌥D") }
+            LabeledContent("Show the session that has waited longest") { Keys("⌃⌥J") }
         } header: { Text("Prompts") } footer: {
-            Note("These only work while something is waiting, so other apps keep these keys the rest of the time. ⌃⌥J opens that session's terminal tab. Risky commands, like deleting folders or force-pushing, always need a click on Allow once.")
+            Note("They work only while something is waiting, so other apps keep these keys the rest of the time. Risky commands always need a click.")
         }
         Section {
-            LabeledContent("Move · open", value: "↑ ↓ · ⏎")
-            LabeledContent("All actions for the selected row", value: "⌘K")
-            LabeledContent("Approve · deny the selected card", value: "⌘⏎ · ⌘⌫")
-            LabeledContent("Reply · phone · compact · clear · rename", value: "M · P · C · K · R")
-            LabeledContent("Stop the selected session", value: "⌘⌫")
-            LabeledContent("Search · refresh · new session", value: "⌘F · ⌘R · ⌘N")
+            LabeledContent("Move, then open") { Keys("↑ ↓", "⏎") }
+            LabeledContent("Everything you can do with the selected row") { Keys("⌘K") }
+            LabeledContent("Allow or deny the selected prompt") { Keys("⌘⏎", "⌘⌫") }
+            LabeledContent("Reply to the selected session") { Keys("M") }
+            LabeledContent("Stop the selected session") { Keys("⌘.") }
+            LabeledContent("Running or Recent") { Keys("⌘1", "⌘2") }
+            LabeledContent("Search, refresh, new session") { Keys("⌘F", "⌘R", "⌘N") }
         } header: { Text("In the dropdown") }
     }
 
@@ -141,19 +141,9 @@ struct SettingsView: View {
 
     @ViewBuilder private var general: some View {
         Section {
-            Picker("Keep session history for", selection: Binding(get: { model.retentionDays }, set: { model.setRetention($0) })) {
-                ForEach(Retention.choices(current: model.retentionDays), id: \.self) { d in
-                    Text(Retention.label(d)).tag(d)
-                }
-            }
-            .pickerStyle(.segmented)
-            Note("Claude Code deletes saved sessions older than this by itself. Agent Deck goes up to 30 days.")
-        } header: { Text("History") }
-
-        Section {
             Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
         } header: { Text("Prompts") } footer: {
-            Note("Claude's prompts, questions and plans show up in the menu and as alerts. From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it. Risky commands always need a click. The terminal still asks too, and whichever you answer first counts. Turn this off and Claude asks only in the terminal.")
+            Note("Prompts, questions and plans show up in the menu and as alerts. The terminal still asks too, and whichever you answer first counts. Risky commands always need a click.")
         }
 
         if !model.allowedRules.isEmpty {
@@ -169,7 +159,7 @@ struct SettingsView: View {
                     }
                 }
             } header: { Text("Rules you allowed from Agent Deck") } footer: {
-                Note("Remove takes the rule out of Claude Code's settings, so it asks again. \"For this session\" rules aren't listed: they end with the session.")
+                Note("Remove takes a rule out of Claude Code's settings, so it asks again. Session-only rules end with their session.")
             }
         }
 
@@ -177,10 +167,13 @@ struct SettingsView: View {
             Picker("Open sessions in", selection: $terminalApp) {
                 ForEach(TerminalApp.allCases.filter { $0.isInstalled || $0.rawValue == terminalApp }) { Text($0.title).tag($0.rawValue) }
             }
-            Toggle("Keep the Mac awake while Claude works", isOn: Binding(get: { keepAwake }, set: { keepAwake = $0; model.setKeepAwake($0) }))
+            if terminalApp != TerminalApp.iterm.rawValue {
+                Note("Reply, rename, compact, clear and phone type into a session, so they work only for sessions in iTerm.")
+            }
+            Toggle(AppModel.keepAwakeTitle, isOn: Binding(get: { keepAwake }, set: { keepAwake = $0; model.setKeepAwake($0) }))
             Toggle("Show when Claude is having problems", isOn: Binding(get: { checkStatus }, set: { checkStatus = $0; model.checkServiceStatus(every: 0) }))
         } header: { Text("Sessions") } footer: {
-            Note("New and resumed sessions open in the terminal you pick. Reply, phone, compact, clear and rename type into iTerm tabs only. Keeping awake stops idle sleep only while a session works; the display can still sleep, and closing the lid on battery still sleeps. Claude's status comes from status.claude.com, checked every few minutes while a session works or the menu is open.")
+            Note("Keeping awake holds off idle sleep only while a session works; the display can still sleep. Claude's status comes from status.claude.com.")
         }
 
         Section {
@@ -189,6 +182,17 @@ struct SettingsView: View {
             }
             Toggle("Open at login", isOn: Binding(get: { model.opensAtLogin }, set: { model.setOpensAtLogin($0) }))
         } header: { Text("App") }
+
+        Section {
+            Picker("Keep session history for", selection: Binding(get: { model.retentionDays }, set: { model.setRetention($0) })) {
+                ForEach(Retention.choices(current: model.retentionDays), id: \.self) { d in
+                    Text(Retention.label(d)).tag(d)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: { Text("History") } footer: {
+            Note("Claude Code deletes older sessions by itself. Up to 30 days.")
+        }
 
         Section {
             HStack {
@@ -212,7 +216,7 @@ struct SettingsView: View {
 
     @ViewBuilder private var notifications: some View {
         Section {
-            Picker("Show alerts", selection: $peekPlacement) {
+            Picker("Where", selection: $peekPlacement) {
                 ForEach(PeekPlacement.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
             }
             LabeledContent("Preview") {
@@ -225,46 +229,28 @@ struct SettingsView: View {
                 .controlSize(.small)
                 .disabled(peekPlacement == PeekPlacement.banners.rawValue)
             }
-        } header: { Text("Alerts") } footer: {
-            Note("Alerts drop from the notch, or from Dot in the menu bar on a screen without one, each with its own sound. Screen sharing doesn't show them. In a Focus, only prompts get through, quietly; the rest wait until it ends. If your screen is locked or you've been away for two minutes, they come as macOS notifications. Right-click Dot to snooze them for an hour.")
+        } header: { Text("Show alerts") } footer: {
+            Note("Without a notch they drop from Dot in the menu bar. They never show in screen sharing. In a Focus only prompts get through, quietly. When you're away, they arrive as macOS notifications.")
         }
         Section {
-            Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
-            Toggle("A session finishes something that took over a minute", isOn: $notifyFinished)
-            Toggle("A limit reaches your warning level, or looks set to run out before it resets", isOn: $notifyLimits)
+            Toggle("A session needs your answer", isOn: $notifyWaiting)
+            Toggle("A task that took over a minute finishes", isOn: $notifyFinished)
+            Toggle("A limit gets close or looks set to run out", isOn: $notifyLimits)
             if notifyLimits {
-                LabeledContent("Warn at") {
-                    HStack(spacing: 4) {
-                        TextField("", text: $warnAt)
-                            .textFieldStyle(.roundedBorder).frame(width: 56).multilineTextAlignment(.trailing)
-                            .focused($warnFocused)
-                            .onSubmit(saveWarnAt)
-                            .onChange(of: warnFocused) { _, focused in if !focused { saveWarnAt() } }
-                        Text("%").foregroundStyle(.secondary)
-                    }
+                Stepper(value: $warnLevel, in: 50...95, step: 5) {
+                    LabeledContent("Warn at", value: "\(Int(warnLevel))%")
                 }
+                .onChange(of: warnLevel) { model.recheckLimits() }
             }
-        } header: { Text("Notify me when") } footer: {
-            Note("Everyone signed in to your Claude account shares these limits, so you can get a warning even when this Mac is quiet. Warn at takes 1 to 99%. If another app already tells you about sessions, turn off the first two so you don't get double alerts.")
+        } header: { Text("Alert me when") } footer: {
+            Note("Limits are shared by everyone on your Claude account, so a warning can come while this Mac is quiet.")
         }
-    }
-
-    /// Saved on Return or leaving the field, not per keystroke: typing "50" mustn't warn at 5% on the way.
-    private func saveWarnAt() {
-        guard let v = Double(warnAt.trimmingCharacters(in: CharacterSet(charactersIn: " %"))), (1...99).contains(v) else {
-            warnAt = "\(Int(Notifier.warnAt))"   // not a level: put the saved one back
-            return
-        }
-        warnAt = "\(Int(v.rounded()))"
-        guard v.rounded() != Notifier.warnAt else { return }
-        UserDefaults.standard.set(v.rounded(), forKey: Notifier.Key.warnAt)
-        model.recheckLimits()   // a level below today's usage warns now, not at the next change
     }
 
     @ViewBuilder private var storage: some View {
         Section {
             if let st = model.storage {
-                StorageBar(parts: [("Conversations", st.conversations, .blue), ("Scratchpads", st.scratchpads, .purple), ("Undo backups", st.undoBackups, .teal)])
+                StorageBar(parts: [("Conversations", st.conversations, Color.primary.opacity(0.7)), ("Scratchpads", st.scratchpads, Color.primary.opacity(0.42)), ("Undo backups", st.undoBackups, Color.primary.opacity(0.22))])
                 HStack {
                     Text(st.orphans.isEmpty ? "No leftovers. Nice and tidy."
                          : "\(Fmt.count(st.orphans.count, "leftover")) from deleted sessions · \(Fmt.bytes(st.orphanBytes))")
@@ -283,7 +269,7 @@ struct SettingsView: View {
         Section {
             DatePicker("Delete closed sessions last used before", selection: $cutoff, displayedComponents: .date)
             HStack {
-                Text("\(Fmt.count(old.count, "session")) · \(Fmt.bytes(old.reduce(0) { $0 + $1.bytes }))").foregroundStyle(.secondary)
+                Text(old.isEmpty ? "Nothing that old" : "\(Fmt.count(old.count, "session")) · \(Fmt.bytes(old.reduce(0) { $0 + $1.bytes }))").foregroundStyle(.secondary)
                     .contentTransition(.numericText(value: Double(old.count)))
                     .animation(Motion.fast(reduceMotion), value: old.count)
                 Spacer()
@@ -303,7 +289,7 @@ struct SettingsView: View {
         Section {
             ForEach(Self.hookKeys, id: \.0) { key, title in healthRow(title, model.health?[key] as? String) }
             HStack {
-                if model.health?["error"] != nil { Text("Couldn't run the check. Is python3 installed?").foregroundStyle(.orange) }
+                if model.health?["error"] != nil { Text("Couldn't run the check. Is python3 installed?").foregroundStyle(Tone.warnText) }
                 Spacer()
                 Button("Repair hooks") { Task { await model.repairHooks() } }
             }
@@ -399,6 +385,20 @@ enum BarStyle: String, CaseIterable, Identifiable {
         case .closest: return "Closest limit"
         case .withSessions: return "Closest limit · running sessions"
         case .ringOnly: return "Ring only"
+        }
+    }
+}
+
+private struct Keys: View {
+    let keys: [String]
+    init(_ keys: String...) { self.keys = keys }
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(keys, id: \.self) { k in
+                Text(k).font(.callout.monospaced()).padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.12)))
+            }
         }
     }
 }

@@ -27,7 +27,7 @@ struct ApprovalCard: View {
     private var word: String {
         if let risk { return "Risky · \(risk)" }
         switch request.kind {
-        case .permission: return "Waiting on you"
+        case .permission: return "Waiting for you"
         case .plan: return "Plan to review"
         case .question: return request.questions.count == 1 ? "Question" : "\(request.questions.count) questions"
         }
@@ -46,28 +46,29 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(tint)
+                Text(word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(outcome == nil ? (risk == nil ? Tone.warnText : Tone.riskText) : tint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    let s = max(0, Int(ctx.date.timeIntervalSince(request.receivedAt)))
-                    Text(String(format: "%d:%02d", s / 60, s % 60)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                    let m = Int(ctx.date.timeIntervalSince(request.receivedAt) / 60)
+                    Text(m < 1 ? "just now" : Fmt.span(Double(m) * 60)).font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(1).fixedSize()
                 }
-                .frame(minWidth: 34, alignment: .trailing)
                 IconButton(symbol: "terminal", help: "Answer in the terminal") { model.openSession(id: request.sessionId) }
                     .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(sentence).font(.body.weight(.semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
                 if let place = Fmt.place(request.cwd, branch: model.branches[request.cwd], name: name) {
                     Text(place).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
             .accessibilityElement(children: .combine)
             .help(risk.map { "This one \($0), so shortcuts won't allow it. Click Allow once if you're sure." } ?? request.cwd)
-            if let did = model.away[request.sessionId]?.line {
-                Text(did).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let away = model.away[request.sessionId], let short = away.short {
+                Text(short).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    .help(away.line ?? short)
             }
             if let d = request.description, request.kind == .permission {
                 Text(d).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -105,8 +106,9 @@ struct ApprovalCard: View {
         .overlay(alignment: .leading) {
             UnevenRoundedRectangle(topLeadingRadius: Radius.row, bottomLeadingRadius: Radius.row).fill(tint).frame(width: 3)
         }
-        .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.accentColor, lineWidth: 2) } }
+        .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.5), lineWidth: 1.5) } }
         .overlay { if let o = outcome { outcomeView(o) } }
+        .accessibilityElement(children: .contain)
         .animation(Motion.snappy(reduceMotion), value: outcome)
     }
 
@@ -218,19 +220,20 @@ struct ApprovalCard: View {
                     .help("Deny it, and tell Claude why if you like")
                 Spacer()
                 if let rule = request.alwaysLabel {
-                    Menu("Always allow") {
-                        ForEach(RuleScope.allCases, id: \.self) { scope in
+                    Menu("For this session") {
+                        ForEach([RuleScope.project, .everywhere], id: \.self) { scope in
                             Button(Self.scopeTitle(scope, cwd: request.cwd)) { model.answer(request.id, .allow(always: true, scope: scope)) }
                         }
                     } primaryAction: { model.answer(request.id, .allow(always: true, scope: .session)) }
                     .menuStyle(.borderedButton).fixedSize()
-                    .help("Click: allow \(rule) until this session ends. Arrow: keep it for this project or everywhere.")
+                    .help("Allows \(rule) until this session ends. The arrow keeps it for this project or every project.")
+                    .padding(.trailing, 4)
                 }
                 Button("Allow") { model.answer(request.id, .allow(always: false)) }.buttonStyle(.borderedProminent)
             }
             if let rule = request.alwaysLabel {
-                Text("Always allow covers \(rule) for this session. The arrow keeps it longer.").font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true).help(rule)
+                Text("Covers \(rule) until the session ends").font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(rule)
             }
         }
     }
@@ -350,5 +353,43 @@ private struct OutcomeBadge: View {
         .foregroundStyle(color)
         .onAppear { shown = !reduceMotion }
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct QueuedCard: View {
+    let model: AppModel
+    let request: ApprovalRequest
+    let open: () -> Void
+
+    private var summary: String {
+        switch request.kind {
+        case .permission: return request.detail.split(separator: "\n").first.map(String.init) ?? request.toolName
+        case .plan: return model.away[request.sessionId]?.short ?? "Has a plan for you"
+        case .question: return request.questions.first?.question ?? model.away[request.sessionId]?.short ?? "Asks you something"
+        }
+    }
+
+    var body: some View {
+        let risk = request.risk
+        Button(action: open) {
+            HStack(spacing: 8) {
+                Capsule().fill(risk == nil ? Color.orange : .red).frame(width: 3, height: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.sessionName(request.sessionId, cwd: request.cwd)).font(.callout.weight(.semibold)).lineLimit(1)
+                    Text(summary).font(request.kind == .permission ? .subheadline.monospaced() : .subheadline)
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                if let risk {
+                    Text("RISKY").font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(Tone.riskText).help("This one \(risk)")
+                }
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows this prompt")
     }
 }
