@@ -23,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(Notifier.Key.waiting) private var notifyWaiting = true
     @AppStorage(Notifier.Key.finished) private var notifyFinished = true
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
+    @AppStorage(PeekPlacement.key) private var peekPlacement = PeekPlacement.automatic.rawValue
     @AppStorage(SettingsPage.key) private var page = SettingsPage.general.rawValue
     @State private var warnAt = "\(Int(Notifier.warnAt))"
     @FocusState private var warnFocused: Bool
@@ -180,6 +181,14 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var notifications: some View {
+        Section {
+            Picker("Show alerts", selection: $peekPlacement) {
+                ForEach(PeekPlacement.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+            }
+        } header: { Text("Alerts") } footer: {
+            Text("Alerts drop from the notch, or from Agent Deck's menu bar icon on a screen without one, and play a sound for the kind of alert. They're hidden from screen sharing. When the screen is locked or you've been away for two minutes, they go out as macOS notifications instead.")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
         Section {
             Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
             Toggle("A session finishes a task that took over a minute", isOn: $notifyFinished)

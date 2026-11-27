@@ -268,8 +268,8 @@ struct CompactUsage: View {
         if let l = model.codexUsage.first { items.append(("Codex", l.percent)) }
         return items.enumerated().reduce(Text("")) { out, e in
             let (label, pct) = e.element
-            let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= 75 ? .semibold : .regular)
-                .foregroundColor(pct >= 75 ? Level.color(pct) : .primary)
+            let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= Notifier.warnAt ? .semibold : .regular)
+                .foregroundColor(pct >= Notifier.warnAt ? Level.color(pct) : .primary)
             return out + Text(e.offset == 0 ? "" : " · ").foregroundColor(.secondary) + Text("\(label) ").foregroundColor(.secondary) + value
         }
     }

@@ -8,7 +8,7 @@ A macOS menu bar app for your coding agents: [Claude Code](https://claude.com/cl
 - **Pin and shortcut**: pin the dropdown as a panel that floats above your terminal (full, or small: one line per session), or turn on ⌃⌥O to open it from any app (Settings → Shortcuts, or the welcome card on first open).
 - **Codex usage**: Codex's own limits (5-hour and weekly, or monthly on the free plan) under the Claude rings, read from Codex's session files.
 - **Health**: Settings (⌘,) shows whether every hook is set up, and repairs them in one click.
-- **Notifications**: a session needs your answer, a long task finished, a limit reached your warning level (80% unless you change it in Settings) or is on pace to run out before it resets. Each can be switched off.
+- **Alerts**: a session needs your answer, a long task finished, a limit reached your warning level (80% unless you change it in Settings) or is on pace to run out before it resets. They drop from the notch (or from the menu bar icon on a screen without one) with Dot, whose face shows what happened and whose rim is your usage, and a sound for each kind: needs you, limit, or done. When you're away they go out as macOS notifications. Each can be switched off.
 - **Phone in one click**: make a running session reachable from the Claude phone app while it keeps running on your Mac, or disconnect the phone again. No restart.
 - **Rename** running sessions (types `/rename`) and closed ones.
 - **New session without a terminal**: pick a folder, then start it for your phone or open it in iTerm.

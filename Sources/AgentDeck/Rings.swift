@@ -3,7 +3,7 @@ import AgentDeckCore
 import SwiftUI
 
 enum Level {
-    static func color(_ pct: Double) -> Color { pct >= 90 ? .red : pct >= 75 ? .orange : .accentColor }
+    static func color(_ pct: Double) -> Color { pct >= LimitWindow.full ? .red : pct >= Notifier.warnAt ? .orange : .accentColor }
 }
 
 enum Motion {
@@ -93,35 +93,5 @@ struct UsageTile: View {
                 }
             }
         }
-    }
-}
-
-/// The menu bar picture: a small ring drawn into an image (menu bar labels only take Image + Text).
-enum MenuBarRing {
-    static func image(percent: Double?, weekly: Bool = false, alert: Bool = false) -> NSImage {
-        let size = NSSize(width: 18, height: 16)
-        let img = NSImage(size: size, flipped: false) { full in
-            let rect = NSRect(x: 0, y: 0, width: 16, height: 16)
-            if alert {
-                NSColor.systemOrange.setFill()
-                NSBezierPath(ovalIn: NSRect(x: full.maxX - 6, y: full.maxY - 6, width: 6, height: 6)).fill()
-            }
-            let r = rect.insetBy(dx: 2, dy: 2)
-            let track = NSBezierPath(ovalIn: r)
-            track.lineWidth = 2.5
-            NSColor.secondaryLabelColor.withAlphaComponent(0.35).setStroke()
-            track.stroke()
-            guard let percent, percent > 0 else { return true }
-            let center = NSPoint(x: rect.midX, y: rect.midY)
-            let arc = NSBezierPath()
-            arc.appendArc(withCenter: center, radius: r.width / 2, startAngle: 90, endAngle: 90 - 360 * CGFloat(min(percent, 100) / 100), clockwise: true)
-            arc.lineWidth = 2.5
-            arc.lineCapStyle = .round
-            (percent >= 75 || !weekly ? NSColor(Level.color(percent)) : NSColor.systemTeal).setStroke()
-            arc.stroke()
-            return true
-        }
-        img.isTemplate = false
-        return img
     }
 }

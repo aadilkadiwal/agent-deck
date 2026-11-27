@@ -416,7 +416,7 @@ struct MenuView: View {
                     HStack(spacing: 4) {
                         Ring(percent: l.percent, size: 12, line: 2.5, showsLabel: false)
                         Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
-                            .foregroundStyle(l.percent >= 75 ? Level.color(l.percent) : .secondary)
+                            .foregroundStyle(l.percent >= Notifier.warnAt ? Level.color(l.percent) : .secondary)
                             .contentTransition(.numericText(value: l.percent))
                             .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
                     }

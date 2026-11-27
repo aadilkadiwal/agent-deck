@@ -37,8 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct BarLabel: View {
     let model: AppModel
     @AppStorage("barStyle") private var barStyle = BarStyle.closest.rawValue
-    @State private var blinkOff = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -53,8 +51,13 @@ struct BarLabel: View {
         let limit = (weeklyCloser ? "Weekly \(pct(week))" : pct(five))
             + (back.map { " · resets \(Fmt.clock($0))" } ?? out.map { " · out \(Fmt.clock($0))" } ?? "")
         let waiting = model.count(.blocked)
+        let mood: DotMood = model.pendingApprovals.contains { $0.risk != nil } ? .risky
+            : model.needsYou || !model.pendingApprovals.isEmpty ? .needs
+            : back != nil ? .reached
+            : (shown?.percent() ?? 0) >= Notifier.warnAt ? (out != nil ? .runsOut : .warn)
+            : model.count(.busy) > 0 ? .working : .idle
         HStack(spacing: 4) {
-            Image(nsImage: MenuBarRing.image(percent: weeklyCloser ? week : five, weekly: weeklyCloser, alert: model.needsYou && !blinkOff))
+            Dot(mood: mood, percent: weeklyCloser ? week : five, size: 18, extras: mood == .needs, fps: 15)
             switch style {
             case .closest: Text(waiting > 0 ? "\(limit) · \(waiting) waiting" : limit)
             case .withSessions: Text("\(limit) · \(model.live.count)")
@@ -65,14 +68,6 @@ struct BarLabel: View {
         .accessibilityHidden(true)
         // Tooltip and VoiceOver label live on the status button, which takes the clicks.
         .onChange(of: model.barSummary, initial: true) { StatusMenu.describe(model.barSummary) }
-        .task(id: model.needsYou) {
-            guard model.needsYou, !reduceMotion else { blinkOff = false; return }
-            for _ in 0..<4 {
-                blinkOff.toggle()
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
-            blinkOff = false
-        }
         // The label is the only view alive from launch, so it hands the AppKit panel a window opener.
         .task {
             model.showDetails = { [openWindow] tab in
@@ -125,6 +120,11 @@ enum StatusMenu {
         item?.button?.setAccessibilityLabel(summary)
     }
 
+    static var buttonFrame: NSRect? {
+        guard let b = item?.button, let w = b.window else { return nil }
+        return w.convertToScreen(b.convert(b.bounds, to: nil))
+    }
+
     static func toggle() {
         if panel?.isVisible == true { close() } else { open() }
     }
@@ -132,6 +132,7 @@ enum StatusMenu {
     static func open() {
         guard let content, let button = item?.button, let screen = button.window?.screen ?? NSScreen.main,
               panel?.isVisible != true else { return }
+        Peek.close()
         let panel = self.panel ?? makePanel()
         self.panel = panel
         available = (button.window?.frame.minY ?? screen.visibleFrame.maxY) - screen.visibleFrame.minY
