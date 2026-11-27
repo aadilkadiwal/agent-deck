@@ -10,7 +10,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         static let waiting = "notifyWaiting", finished = "notifyFinished", limits = "notifyLimits"
         static let fired = "firedLimitWarnings", warnAt = "limitWarnAt"
     }
-    static var warnAt: Double {
+    nonisolated static var warnAt: Double {
         let v = UserDefaults.standard.double(forKey: Key.warnAt)
         return (1...99).contains(v) ? v : 80
     }
@@ -20,6 +20,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpen: ((String) -> Void)?
     var onAnswer: ((Int, ApprovalAnswer) -> Void)?
     var onSwitch: (() -> Void)?
+    var onDecide: ((Int, ApprovalAnswer) -> Void)?
+    var onReview: (() -> Void)?
+    var peek: ((PeekAlert) -> Bool)?
     var hasApproval: ((String) -> Bool)?
     private var busySince: [String: Date] = [:]
 
@@ -50,11 +53,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             // A permission prompt mid-task is still the same task, so the start time survives until idle.
             if s.state == .busy, busySince[s.sessionId] == nil { busySince[s.sessionId] = now }
             if s.state == .blocked, prev != nil, prev?.state != .blocked, enabled(Key.waiting), hasApproval?(s.sessionId) != true {
-                post(id: "wait-\(s.sessionId)", title: name(s), body: Self.waitingText(s.waitingFor), sessionId: s.sessionId)
+                post(PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name(s), meta: Self.waitingText(s.waitingFor),
+                               actions: [show(s.sessionId)]),
+                     body: Self.waitingText(s.waitingFor), sessionId: s.sessionId)
             }
+            // Answered in the terminal: nothing left to wait for.
+            if s.state != .blocked, prev?.state == .blocked { Peek.dismiss(id: "wait-\(s.sessionId)") }
             if s.state == .idle, prev?.state == .busy, let start = busySince[s.sessionId],
                now.timeIntervalSince(start) >= Self.longTask, enabled(Key.finished) {
-                post(id: "done-\(s.sessionId)", title: name(s), body: "Finished · took \(Fmt.duration(now.timeIntervalSince(start)))", sessionId: s.sessionId)
+                let took = "Finished · took \(Fmt.duration(now.timeIntervalSince(start)))"
+                post(PeekAlert(id: "done-\(s.sessionId)", kind: .done, title: name(s), meta: took, actions: [show(s.sessionId)]),
+                     body: took, sessionId: s.sessionId)
             }
             if s.state == .idle { busySince[s.sessionId] = nil }
         }
@@ -80,8 +89,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             warned.insert(w.key)
             var body = Fmt.resetsTitle(w.resetsAt)
             if pct < LimitWindow.full, case .reachesLimit(let at) = forecast(w) { body += " · at this pace you'll reach 100% at \(Fmt.clock(at))" }
-            post(id: key, title: "\(w.label) limit at \(Int(pct.rounded()))%", body: limitBody(body, note, canSwitch), sessionId: nil,
-                 category: canSwitch > 0 && pct < LimitWindow.full ? "limit-switch" : nil)
+            let switches = pct < LimitWindow.full ? canSwitch : 0
+            post(PeekAlert(id: key, kind: pct >= LimitWindow.full ? .reached : .warn, title: "\(w.label) limit at \(Int(pct.rounded()))%",
+                           meta: body, lines: limitLines(note, switches), percent: pct, actions: switchActions(switches)),
+                 body: limitBody(body, note, switches), sessionId: nil, category: switches > 0 ? "limit-switch" : nil)
         }
         // Accounts are often shared, so the pace can jump from someone else's use: warn once per period
         // as soon as the limit is on track to run out before it resets.
@@ -92,9 +103,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             let key = "\(w.key)-pace-\(Self.period(w))"
             // The threshold alert just posted already carries this ETA.
             guard fired.insert(key).inserted, !warned.contains(w.key) else { continue }
-            post(id: key, title: "\(w.label) limit runs out at \(Fmt.clock(at))",
-                 body: limitBody("At this pace, before it \(Fmt.resets(w.resetsAt)) · now \(Int(w.percent().rounded()))%", note, canSwitch),
-                 sessionId: nil, category: canSwitch > 0 ? "limit-switch" : nil)
+            let body = "At this pace, before it \(Fmt.resets(w.resetsAt)) · now \(Int(w.percent().rounded()))%"
+            post(PeekAlert(id: key, kind: .runsOut, title: "\(w.label) limit runs out at \(Fmt.clock(at))", meta: body,
+                           lines: limitLines(note, canSwitch), percent: w.percent(), actions: switchActions(canSwitch)),
+                 body: limitBody(body, note, canSwitch), sessionId: nil, category: canSwitch > 0 ? "limit-switch" : nil)
         }
         // Keys end with the period's reset minute; once that has passed the key can't match again.
         let now = Date().timeIntervalSince1970 / 60
@@ -107,16 +119,30 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static func period(_ w: LimitWindow) -> Int { Int(((w.resetsAt?.timeIntervalSince1970 ?? 0) / 60).rounded()) }
 
     private func limitBody(_ body: String, _ note: String?, _ canSwitch: Int) -> String {
-        [body, note, canSwitch > 0 ? "\(Fmt.count(canSwitch, "idle session")) on Opus here could switch to Sonnet" : nil]
-            .compactMap { $0 }.joined(separator: "\n")
+        ([body] + limitLines(note, canSwitch)).joined(separator: "\n")
+    }
+
+    private func limitLines(_ note: String?, _ canSwitch: Int) -> [String] {
+        [note, canSwitch > 0 ? "\(Fmt.count(canSwitch, "idle session")) on Opus here could switch to Sonnet" : nil].compactMap { $0 }
+    }
+
+    private func switchActions(_ canSwitch: Int) -> [PeekAlert.Action] {
+        guard canSwitch > 0 else { return [] }
+        return [PeekAlert.Action(title: "Not now") {},
+                PeekAlert.Action(title: "Switch to Sonnet", style: .primary, done: "Switching to Sonnet…") { [weak self] in self?.onSwitch?() }]
+    }
+
+    private func show(_ sessionId: String) -> PeekAlert.Action {
+        PeekAlert.Action(title: "Show", style: .primary) { [weak self] in self?.onOpen?(sessionId) }
     }
 
     func continued(done: [String], failed: [String]) {
         guard !done.isEmpty || !failed.isEmpty else { return }
         let body = [done.isEmpty ? nil : "Continued \(done.joined(separator: ", "))",
                     failed.isEmpty ? nil : "Couldn't type into \(failed.joined(separator: ", ")); continue it yourself"]
-        post(id: "continued-\(Date().timeIntervalSince1970)", title: "Your limit has reset",
-             body: body.compactMap { $0 }.joined(separator: "\n"), sessionId: nil)
+        let lines = body.compactMap { $0 }
+        post(PeekAlert(id: "continued-\(Date().timeIntervalSince1970)", kind: .back, title: "Your limit has reset", lines: lines),
+             body: lines.joined(separator: "\n"), sessionId: nil)
     }
 
     func approvalArrived(_ r: ApprovalRequest, name: String) {
@@ -133,26 +159,49 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         case .question:
             (title, body, category) = ("\(name) asks", r.questions.map(\.question).joined(separator: "\n"), nil)
         }
-        post(id: "approval-\(r.id)", title: title, body: String(body.prefix(300)), sessionId: r.sessionId,
-             category: category, info: ["approvalId": r.id], sound: UNNotificationSound(named: UNNotificationSoundName("Glass.aiff")))
+        let decide = { [weak self] (a: ApprovalAnswer) -> Void in self?.onDecide?(r.id, a) }
+        let review = { [weak self] () -> Void in self?.onReview?() }
+        var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title)
+        switch r.kind {
+        case .permission:
+            alert.code = body
+            alert.actions = r.risk != nil
+                ? [.init(title: "Deny", style: .primary, done: "Denied") { decide(.deny) },
+                   .init(title: "Allow once", style: .danger, done: "Allowed once") { decide(.allow(always: false)) }]
+                : [.init(title: "Deny", done: "Denied") { decide(.deny) }]
+                    + (r.alwaysLabel == nil ? [] : [.init(title: "Always allow", done: "Always allowed") { decide(.allow(always: true)) }])
+                    + [.init(title: "Allow", style: .primary, done: "Allowed") { decide(.allow(always: false)) }]
+        case .plan:
+            alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))
+            alert.actions = [.init(title: "Review the plan", style: .primary, run: review)]
+        case .question:
+            alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))
+            alert.actions = [.init(title: "Answer", style: .primary, run: review)]
+        }
+        post(alert, body: String(body.prefix(300)), sessionId: r.sessionId, category: category, info: ["approvalId": r.id])
     }
 
     func approvalDone(_ id: Int) {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["approval-\(id)"])
+        Peek.dismiss(id: "approval-\(id)")
     }
 
-    private func post(id: String, title: String, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:],
-                      sound: UNNotificationSound = .default) {
+    private func post(_ alert: PeekAlert, body: String, sessionId: String?, category: String? = nil, info: [String: Any] = [:]) {
+        if peek?(alert) == true { return }
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
-        content.title = title
+        content.title = alert.title
         content.body = body
-        content.sound = sound
+        content.sound = UNNotificationSound(named: UNNotificationSoundName("\(alert.kind.sound).aiff"))
+        if alert.kind.isLimit, let png = Dot.png(mood: alert.kind.mood, percent: alert.percent) {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("agent-deck-\(UUID().uuidString).png")
+            if (try? png.write(to: url)) != nil, let a = try? UNNotificationAttachment(identifier: "dot", url: url) { content.attachments = [a] }
+        }
         var userInfo = info
         if let sessionId { userInfo["sessionId"] = sessionId }
         content.userInfo = userInfo
         if let category { content.categoryIdentifier = category }
-        center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+        center.add(UNNotificationRequest(identifier: alert.id, content: content, trigger: nil))
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,

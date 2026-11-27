@@ -84,6 +84,8 @@ final class AppModel {
     private var accountBackoff: TimeInterval = 0
     private var lastAccount = ClaudeAccount.current()
     private var historyLoaded = false
+    private var alertsChecked = false
+    private let launched = Date()
     private var lastLoginCheck = Date.distantPast
     private var lastRecentUse = Date.distantPast
     private var lastHealthCheck = Date.distantPast
@@ -114,6 +116,9 @@ final class AppModel {
         notifier.onOpen = { [weak self] id in self?.openSession(id: id) }
         notifier.onAnswer = { [weak self] id, answer in self?.answerFromNotification(id, answer) }
         notifier.onSwitch = { [weak self] in self?.switchToSonnet() }
+        notifier.onDecide = { [weak self] id, answer in self?.answer(id, answer) }
+        notifier.onReview = { StatusMenu.open() }
+        notifier.peek = { [weak self] alert in Peek.show(alert, percent: self?.shownPercent) }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
         hotkeys.onMenu = { StatusMenu.toggle() }
@@ -133,6 +138,8 @@ final class AppModel {
 
     var liveIds: Set<String> { Set(live.map(\.sessionId)) }
     var closed: [HistorySession] { history.filter { !liveIds.contains($0.sessionId) } }
+    var shownPercent: Double? { [usage?.fiveHour?.percent(), usage?.weekly?.percent()].compactMap { $0 }.max() }
+
     var needsYou: Bool { live.contains { $0.state == .blocked && !$0.isLeftover } }
     func count(_ state: LiveSession.State) -> Int { live.filter { $0.state == state && !$0.isLeftover }.count }
 
@@ -374,8 +381,10 @@ final class AppModel {
             let f = Dictionary(uniqueKeysWithValues: (u?.windows ?? []).map { ($0.key, Forecast.compute($0, samples: samples)) })
             if f != forecasts { forecasts = f }
         }
-        // Alerts wait for the first history scan: offering the switch needs each session's model.
-        if usageChanged, historyLoaded, let u {
+        // Alerts wait for the first history scan (offering the switch needs each session's model), but
+        // never long: a folder-access prompt can hold the session scan up indefinitely.
+        if let u, historyLoaded || Date().timeIntervalSince(launched) > 15, usageChanged || !alertsChecked {
+            alertsChecked = true
             notifier.usageChanged(u, forecast: forecast, note: usageNote, canSwitch: switchCandidates.count)
         }
         if !continueQueue.isEmpty, limitHit == nil { await continueQueued() }
@@ -397,6 +406,8 @@ final class AppModel {
         }
         if !historyLoaded {
             historyLoaded = true
+            // Which sessions here were active decides whether alerts blame another Mac, so read that first.
+            await refreshRecentUse()
             recheckLimits()
         }
         if UserDefaults.standard.bool(forKey: "autoCleanLeftovers"), Date().timeIntervalSince(lastAutoClean) > 86400 {
