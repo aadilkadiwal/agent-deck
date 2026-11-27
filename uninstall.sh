@@ -40,8 +40,8 @@ if [ -f "$DATA_DIR/hook.py" ]; then
     echo "✗ Couldn't remove the hooks (see above). Kept $DATA_DIR; fix the file and run this again." >&2
     exit 1
   fi
-  echo "✓ Hooks removed from Claude Code, Codex and Gemini CLI"
-elif grep -qs 'agent-deck/hook.py' "$SETTINGS" "$HOME/.codex/hooks.json" "$HOME/.gemini/settings.json"; then
+  echo "✓ Hooks removed from Claude Code"
+elif grep -qs 'agent-deck/hook.py' "$SETTINGS"; then
   echo "✗ Agent Deck hooks are still in your settings, but $DATA_DIR/hook.py is missing. Run install.sh, then this again." >&2
   exit 1
 fi

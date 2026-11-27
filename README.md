@@ -1,12 +1,11 @@
 # Agent Deck
 
-A macOS menu bar app for your coding agents: [Claude Code](https://claude.com/claude-code), plus [Codex](https://github.com/openai/codex) and [Gemini CLI](https://github.com/google-gemini/gemini-cli) sessions:
+A macOS menu bar app for your [Claude Code](https://claude.com/claude-code) sessions:
 
 - **Usage at a glance**: rings for your 5-hour and weekly limits with reset times (the same numbers `/usage` shows), plus a pace line: "At this pace: 100% at 3:40 PM". The menu bar shows whichever limit is closer to running out.
-- **Live session list**: every running session, newest first, each with its own color (the same color marks its prompt cards), its git branch, and what it's doing right now ("Bash: npm test · 2 agents · 1:23") next to a bar showing how full its context is (amber from 70%, red from 90%), with quick search (name, folder, prompt or ID). A row's buttons show when you point at it or select it. One click compacts a session's context (`/compact`, keeps a summary); Clear is in the right-click menu. ⌘K lists every action for the selected row. Codex and Gemini CLI sessions are listed too. Grouped by project when more than five are running. An amber dot on the menu bar icon and "N waiting" next to it mean a session is waiting for you.
-- **Answer Claude from the menu bar**: permission prompts (Allow / Always allow / Deny), questions and plans (*Approve*, or *Approve, auto-accept edits*) show up as cards at the top of the dropdown and as notifications with answer buttons. Codex permission prompts too (Allow / Deny). ⌃⌥A / ⌃⌥D allow or deny from any app. Risky shell commands (deleting folders, force-pushing, `sudo`, piping a download into a shell…) are marked **RISKY** and can only be allowed with a click. The prompt stays in the terminal too: whichever you answer first wins.
+- **Live session list**: every running session, newest first, each with its own color (the same color marks its prompt cards), its git branch, and what it's doing right now ("Bash: npm test · 2 agents · 1:23") next to a bar showing how full its context is (amber from 70%, red from 90%), with quick search (name, folder, prompt or ID). A row's buttons show when you point at it or select it. One click compacts a session's context (`/compact`, keeps a summary); Clear is in the right-click menu. ⌘K lists every action for the selected row. Grouped by project when more than five are running. An amber dot on the menu bar icon and "N waiting" next to it mean a session is waiting for you.
+- **Answer Claude from the menu bar**: permission prompts (Allow / Always allow / Deny), questions and plans (*Approve*, or *Approve, auto-accept edits*) show up as cards at the top of the dropdown and as notifications with answer buttons. ⌃⌥A / ⌃⌥D allow or deny from any app. Risky shell commands (deleting folders, force-pushing, `sudo`, piping a download into a shell…) are marked **RISKY** and can only be allowed with a click. The prompt stays in the terminal too: whichever you answer first wins.
 - **Pin and shortcut**: pin the dropdown as a panel that floats above your terminal (full, or small: one line per session), or turn on ⌃⌥O to open it from any app (Settings → Shortcuts, or the welcome card on first open).
-- **Codex usage**: Codex's own limits (5-hour and weekly, or monthly on the free plan) under the Claude rings, read from Codex's session files.
 - **Health**: Settings (⌘,) shows whether every hook is set up, and repairs them in one click.
 - **Alerts**: a session needs your answer, a long task finished, a limit reached your warning level (80% unless you change it in Settings) or is on pace to run out before it resets. They drop from the notch (or from the menu bar icon on a screen without one) with Dot, whose face shows what happened and whose rim is your usage, and a sound for each kind: needs you, limit, or done. When you're away they go out as macOS notifications. Each can be switched off.
 - **Phone in one click**: make a running session reachable from the Claude phone app while it keeps running on your Mac, or disconnect the phone again. No restart.
@@ -32,7 +31,7 @@ The installer:
 1. Builds the app from source. Because it's built locally, there's no unsigned download for Gatekeeper to block.
 2. Copies **Agent Deck.app** to `/Applications`.
 3. Points Claude Code's status line at a small tap script (`~/.claude/agent-deck/statusline-tap.sh`) that saves the usage numbers and then runs **your original status line unchanged**. Your `settings.json` is backed up first, to `settings.json.agent-deck-backup`.
-4. Runs `scripts/hook.py install`, which adds Agent Deck's hooks for each agent it finds: `~/.claude/settings.json` (prompts, plus background activity hooks that never slow a tool call), `~/.codex/hooks.json` and `~/.gemini/settings.json` (Gemini CLI 0.26+). Your own hooks are kept as they are. **Codex runs a new hook only after you approve it once**: open Codex and type `/hooks`.
+4. Runs `scripts/hook.py install`, which adds Agent Deck's hooks to `~/.claude/settings.json` (prompts, plus background activity hooks that never slow a tool call). Your own hooks are kept as they are.
 5. Opens the app. It turns on *Open at login*, which you can switch off in Settings.
 
 ## Remove
@@ -66,8 +65,6 @@ Agent Deck has no server and no login. It reads what Claude Code already writes,
 | Rename | Running: types `/rename <name>` (same safety rules as the phone button). Closed: appends a `custom-title` line, as Claude Code does. |
 | Answering prompts | Claude Code runs `hook.py` when it's about to ask (`PermissionRequest`) or about to show a question or plan (`PreToolUse`). The hook sends the request over a Unix socket (`~/.claude/agent-deck/approvals.sock`, owner-only, peer uid checked) and waits up to ~10 min for a permission prompt, ~1 min for a question or plan. Your answer is printed in Claude Code's own hook format: allow / deny, the rule Claude Code suggested for *Always allow*, `updatedInput` with your answers for questions. If the app isn't running, approvals are off, or there's no answer, the hook prints nothing and Claude Code asks as usual. Claude Code keeps its prompt on screen meanwhile; when you answer there, the session's pid file stops saying it's waiting and the card goes away. |
 | Auto-accept edits | Approving a plan this way switches that session to *accept edits* at its next file-edit prompt (a `setMode` permission update), the same as choosing it in the terminal. |
-| Codex | `PermissionRequest` gets Allow / Deny (Codex takes no saved rules from hooks). Session start, prompt, tool and stop hooks fill the session list; a session disappears when its process exits. Usage limits come from the `token_count` events in `~/.codex/sessions/…/rollout-*.jsonl`. |
-| Gemini CLI | Watch only: its hooks show sessions, working / idle and "needs your OK". Gemini can't take an answer from a hook, so you answer in its terminal. |
 | Activity line | `PreToolUse` / `PostToolUse` / `SubagentStart` / `SubagentStop` / `Stop` hooks with `async: true`, so they run in the background. Git branch is read from the folder's `.git/HEAD`. |
 | Show its window | iTerm and Terminal: the exact tab, by tty. tmux: the pane, then the terminal tab its client is in. kitty and WezTerm: the pane in that folder. Others: the app. |
 | Health | `hook.py check` (bundled in the app); *Repair hooks* runs `hook.py install`. |
@@ -99,7 +96,7 @@ Layout:
 - `Sources/AgentDeckCore`: file parsing, `claude` commands, settings. No UI.
 - `Sources/AgentDeck`: SwiftUI menu bar app (`MenuView` dropdown, `DetailsView` window).
 - `scripts/statusline-tap.sh`: the status line tap.
-- `scripts/hook.py`: the hook for all three agents, and its install / uninstall / check (Python 3.9 standard library, what ships with macOS).
+- `scripts/hook.py`: the Claude Code hook, and its install / uninstall / check (Python 3.9 standard library, what ships with macOS).
 
 ## License
 

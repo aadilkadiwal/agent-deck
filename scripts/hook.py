@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Agent Deck's bridge to Claude Code, Codex and Gemini CLI.
+"""Agent Deck's bridge to Claude Code.
 
-    hook.py permission [--agent claude|codex]   PermissionRequest: answer from Agent Deck
-    hook.py question                            Claude PreToolUse for AskUserQuestion|ExitPlanMode
-    hook.py event <Event> [--agent ...]         activity for the session list (fire and forget)
-    hook.py install | uninstall | check         manage these hooks in each agent's settings
+    hook.py permission                   PermissionRequest: answer from Agent Deck
+    hook.py question                     PreToolUse for AskUserQuestion|ExitPlanMode
+    hook.py event <Event>                activity for the session list (fire and forget)
+    hook.py install | uninstall | check  manage these hooks in ~/.claude/settings.json
 
-Every agent keeps its own prompt on screen while a hook waits, so if Agent Deck isn't running or
+Claude Code keeps its own prompt on screen while a hook waits, so if Agent Deck isn't running or
 there's no answer, this prints nothing and the prompt in the terminal works as usual.
 Python 3.9 standard library only (what ships with macOS).
 """
 import json
 import os
-import re
 import shutil
 import socket
-import subprocess
 import sys
 
 HOME = os.path.expanduser("~")
@@ -28,11 +26,6 @@ WAIT = 590
 QUESTION_WAIT = 60
 
 CLAUDE_SETTINGS = os.path.join(HOME, ".claude", "settings.json")
-CODEX_HOOKS = os.path.join(HOME, ".codex", "hooks.json")
-GEMINI_SETTINGS = os.path.join(HOME, ".gemini", "settings.json")
-
-GEMINI_EVENTS = {"SessionStart": "SessionStart", "SessionEnd": "SessionEnd", "BeforeAgent": "UserPromptSubmit",
-                 "AfterAgent": "Stop", "BeforeTool": "PreToolUse", "AfterTool": "PostToolUse", "Notification": "Notification"}
 
 
 def send(message, wait=0):
@@ -60,8 +53,8 @@ def send(message, wait=0):
         return None
 
 
-def ask(kind, agent, payload):
-    return send({"kind": kind, "agent": agent, "pid": os.getppid(), "payload": payload},
+def ask(kind, payload):
+    return send({"kind": kind, "pid": os.getppid(), "payload": payload},
                 wait=WAIT if kind == "permission" else QUESTION_WAIT)
 
 
@@ -69,23 +62,21 @@ def out(event, body):
     print(json.dumps({"hookSpecificOutput": dict(hookEventName=event, **body)}))
 
 
-def permission(agent, payload):
+def permission(payload):
     if payload.get("tool_name") in ("AskUserQuestion", "ExitPlanMode"):
         return
-    reply = ask("permission", agent, payload)
+    reply = ask("permission", payload)
     if not reply:
         return
     if reply.get("decision") == "allow":
         decision = {"behavior": "allow"}
         updates = []
-        # Codex fails closed on updatedPermissions, so only Claude gets rules or modes.
-        if agent == "claude":
-            if reply.get("always"):
-                # Exactly the rule Claude Code itself suggested for this prompt.
-                updates += [s for s in payload.get("permission_suggestions") or []
-                            if isinstance(s, dict) and s.get("type") == "addRules" and s.get("behavior") == "allow"]
-            if reply.get("mode") == "acceptEdits":
-                updates.append({"type": "setMode", "mode": "acceptEdits", "destination": "session"})
+        if reply.get("always"):
+            # Exactly the rule Claude Code itself suggested for this prompt.
+            updates += [s for s in payload.get("permission_suggestions") or []
+                        if isinstance(s, dict) and s.get("type") == "addRules" and s.get("behavior") == "allow"]
+        if reply.get("mode") == "acceptEdits":
+            updates.append({"type": "setMode", "mode": "acceptEdits", "destination": "session"})
         if updates:
             decision["updatedPermissions"] = updates
         out("PermissionRequest", {"decision": decision})
@@ -103,11 +94,11 @@ def question(payload):
         return
     # Both tools need updatedInput along with the allow, or the terminal dialog shows anyway.
     if tool == "ExitPlanMode":
-        reply = ask("plan", "claude", payload)
+        reply = ask("plan", payload)
         if reply and reply.get("decision") == "allow":
             out("PreToolUse", {"permissionDecision": "allow", "updatedInput": tool_input})
     elif tool == "AskUserQuestion":
-        reply = ask("question", "claude", payload)
+        reply = ask("question", payload)
         answers = (reply or {}).get("answers")
         asked = [q.get("question") for q in tool_input.get("questions") or [] if isinstance(q, dict)]
         if isinstance(answers, dict) and asked and all(isinstance(answers.get(q), str) and answers.get(q) for q in asked):
@@ -115,15 +106,9 @@ def question(payload):
                                "updatedInput": dict(tool_input, answers={q: answers[q] for q in asked})})
 
 
-def event(name, agent, payload):
-    if agent == "gemini":
-        if name == "Notification" and payload.get("notification_type") != "ToolPermission":
-            return
-        name = GEMINI_EVENTS.get(name)
-        if not name:
-            return
+def event(name, payload):
     keep = ("session_id", "cwd", "tool_name", "tool_input", "agent_id")
-    send({"kind": "event", "agent": agent, "event": name, "pid": os.getppid(),
+    send({"kind": "event", "event": name, "pid": os.getppid(),
           "payload": {k: payload[k] for k in keep if k in payload}})
 
 
@@ -170,7 +155,7 @@ def without_ours(hooks):
 
 
 def cmd(*args):
-    # If the script is gone, do nothing: python3 exits 2 on a missing file, which agents read as "block".
+    # If the script is gone, do nothing: python3 exits 2 on a missing file, which Claude Code reads as "block".
     # Decisions travel as JSON on stdout with exit 0, so passing python's own status through is safe.
     return '[ ! -f "%s" ] || /usr/bin/python3 "%s" %s' % (HOOK, HOOK, " ".join(args))
 
@@ -190,102 +175,50 @@ def claude_hooks():
                             group(cmd("event", "PreToolUse"), timeout=10, run_async=True)])
 
 
-def codex_hooks():
-    h = {"PermissionRequest": [{"matcher": "", "hooks": [{"type": "command", "command": cmd("permission", "--agent", "codex"), "timeout": 600}]}]}
-    for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"):
-        # SessionEnd hooks may run for at most 3 s in Codex.
-        h[e] = [{"matcher": "", "hooks": [{"type": "command", "command": cmd("event", e, "--agent", "codex"), "timeout": 3}]}]
-    return h
-
-
-def gemini_hooks():
-    return {e: [{"matcher": ".*" if e in ("BeforeTool", "AfterTool") else "",
-                 "hooks": [{"type": "command", "name": "agent-deck-%s" % e.lower(),
-                            "command": cmd("event", e, "--agent", "gemini"), "timeout": 5000}]}]
-            for e in GEMINI_EVENTS}
-
-
-def find(tool):
-    return shutil.which(tool) or next((p for p in ("/opt/homebrew/bin/" + tool, "/usr/local/bin/" + tool,
-                                                   os.path.join(HOME, ".local/bin", tool)) if os.access(p, os.X_OK)), None)
-
-
-def gemini_version():
-    try:
-        m = re.search(r"(\d+)\.(\d+)\.(\d+)", subprocess.run([find("gemini") or "gemini", "--version"],
-                                                            capture_output=True, text=True, timeout=15).stdout)
-        return tuple(int(p) for p in m.groups()) if m else None
-    except Exception:
-        return None
-
-
-def targets():
-    """(name, settings file, our hooks) for every agent installed here."""
-    t = [("claude", CLAUDE_SETTINGS, claude_hooks())]
-    if find("codex") or os.path.isdir(os.path.join(HOME, ".codex")):
-        t.append(("codex", CODEX_HOOKS, codex_hooks()))
-    if find("gemini") and (gemini_version() or (0,)) >= (0, 26, 0):   # hooks arrived in Gemini CLI 0.26
-        t.append(("gemini", GEMINI_SETTINGS, gemini_hooks()))
-    return t
-
-
 def install():
     os.makedirs(DATA, exist_ok=True)
     if os.path.abspath(__file__) != HOOK:
         shutil.copy2(__file__, HOOK)
     os.chmod(HOOK, 0o755)
-    found = targets()
-    for name, path, mine in found:
-        data = load(path)
-        if data is None:
-            print("  %s: %s isn't valid JSON; fix it and try again" % (name, path))
-            continue
-        hooks = without_ours(data.get("hooks"))
-        for event, groups in mine.items():
-            hooks[event] = hooks.get(event, []) + groups
-        data["hooks"] = hooks
-        save(path, data)
-        print("  %s: hooks installed" % name)
-    if any(n == "codex" for n, _, _ in found):
-        print("  codex: open Codex once and approve Agent Deck's hooks in /hooks (Codex asks for every new hook)")
+    data = load(CLAUDE_SETTINGS)
+    if data is None:
+        print("  %s isn't valid JSON; fix it and try again" % CLAUDE_SETTINGS)
+        return
+    hooks = without_ours(data.get("hooks"))
+    for event, groups in claude_hooks().items():
+        hooks[event] = hooks.get(event, []) + groups
+    data["hooks"] = hooks
+    save(CLAUDE_SETTINGS, data)
+    print("  hooks installed")
 
 
 def uninstall():
-    ok = True
-    for path in (CLAUDE_SETTINGS, CODEX_HOOKS, GEMINI_SETTINGS):
-        data = load(path)
-        if data is None:
-            print("  %s isn't valid JSON; fix it and run uninstall again" % path)
-            ok = False
-            continue
-        if "hooks" not in data:
-            continue
-        hooks = without_ours(data["hooks"])
-        if hooks == data["hooks"]:
-            continue
-        if hooks:
-            data["hooks"] = hooks
-        else:
-            data.pop("hooks")
-        if data:
-            save(path, data)
-        else:
-            os.remove(path)
-    return ok
+    data = load(CLAUDE_SETTINGS)
+    if data is None:
+        print("  %s isn't valid JSON; fix it and run uninstall again" % CLAUDE_SETTINGS)
+        return False
+    if "hooks" not in data:
+        return True
+    hooks = without_ours(data["hooks"])
+    if hooks == data["hooks"]:
+        return True
+    if hooks:
+        data["hooks"] = hooks
+    else:
+        data.pop("hooks")
+    if data:
+        save(CLAUDE_SETTINGS, data)
+    else:
+        os.remove(CLAUDE_SETTINGS)
+    return True
 
 
 def check():
     report = {"hookScript": os.path.exists(HOOK)}
-    installed = {name: (path, mine) for name, path, mine in targets()}
-    for name in ("claude", "codex", "gemini"):
-        if name not in installed:
-            report[name] = "absent"
-            continue
-        path, mine = installed[name]
-        have = (load(path) or {}).get("hooks") or {}
-        ok = all(sum(1 for g in have.get(e, []) for h in (g.get("hooks", []) if isinstance(g, dict) else []) if ours(h)) == len(groups)
-                 for e, groups in mine.items())
-        report[name] = "ok" if ok else "missing"
+    have = (load(CLAUDE_SETTINGS) or {}).get("hooks") or {}
+    ok = all(sum(1 for g in have.get(e, []) for h in (g.get("hooks", []) if isinstance(g, dict) else []) if ours(h)) == len(groups)
+             for e, groups in claude_hooks().items())
+    report["claude"] = "ok" if ok else "missing"
     line = (load(CLAUDE_SETTINGS) or {}).get("statusLine") or {}
     report["statusLine"] = "ok" if line.get("command") == os.path.join(DATA, "statusline-tap.sh") else "missing"
     print(json.dumps(report))
@@ -293,11 +226,9 @@ def check():
 
 def main():
     args = sys.argv[1:]
-    agent = "claude"
+    # Hooks an older version installed in other tools pass "--agent"; they get no answer and never wait.
     if "--agent" in args:
-        i = args.index("--agent")
-        agent = args[i + 1] if i + 1 < len(args) else agent
-        del args[i:i + 2]
+        return
     kind = args[0] if args else ""
     if kind in ("install", "check"):
         {"install": install, "check": check}[kind]()
@@ -311,11 +242,11 @@ def main():
     if not isinstance(payload, dict):
         return
     if kind == "permission":
-        permission(agent, payload)
+        permission(payload)
     elif kind == "question":
         question(payload)
     elif kind == "event" and len(args) > 1:
-        event(args[1], agent, payload)
+        event(args[1], payload)
 
 
 if __name__ == "__main__":
