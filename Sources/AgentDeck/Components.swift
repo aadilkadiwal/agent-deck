@@ -25,32 +25,27 @@ struct StateDot: View {
     }
 
     var body: some View {
-        let loops = animated && !reduceMotion, still = reduceMotion
-        Group {
-            switch state {
-            case .busy:
-                Circle().fill(Color.green)
-                    .phaseAnimator(loops ? [1.0, 0.55] : [1.0]) { c, o in c.opacity(o) } animation: { _ in .easeInOut(duration: 0.6) }
-            case .idle: Circle().strokeBorder(Color.green, lineWidth: 1.5)
-            case .blocked: Circle().fill(Color.orange)
-            case nil: Circle().strokeBorder(Color.secondary, lineWidth: 1.5)
+        let loops = animated && !reduceMotion && (state == .busy || state == .blocked)
+        // Phase comes from the clock, not from when this dot appeared, so every working dot pulses together.
+        TimelineView(.animation(minimumInterval: 1 / 20, paused: !loops)) { tl in
+            let phase = loops ? Motion.beat(tl.date) : 0
+            ZStack {
+                switch state {
+                case .busy: Circle().fill(Color.blue).opacity(1 - 0.45 * (1 - cos(2 * .pi * phase)) / 2)
+                case .idle: Circle().strokeBorder(Color.secondary, lineWidth: 1.5)
+                case .blocked:
+                    Circle().fill(Color.orange).scaleEffect(1 + 0.9 * phase).opacity(loops ? 0.5 * (1 - phase) : 0)
+                    Circle().fill(Color.orange)
+                case nil: Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1.5)
+                }
             }
         }
-        .background {
-            if loops && state == .blocked {
-                Circle().fill(Color.orange)
-                    .phaseAnimator([false, true]) { c, on in
-                        c.scaleEffect(on ? 1.9 : 1).opacity(on ? 0 : 0.5)
-                    } animation: { on in on ? .easeOut(duration: Motion.pulse) : nil }
-            }
-        }
-        .keyframeAnimator(initialValue: 1.0, trigger: state) { v, scale in
+        .keyframeAnimator(initialValue: 1.0, trigger: state) { [still = reduceMotion] v, scale in
             v.scaleEffect(still ? 1 : scale)
         } keyframes: { _ in
             SpringKeyframe(1.25, duration: 0.12)
             SpringKeyframe(1.0, duration: 0.2)
         }
-        .animation(Motion.snappy(reduceMotion), value: state)
         .frame(width: 9, height: 9)
         .help(label)
         .accessibilityLabel(label)
@@ -197,7 +192,7 @@ func highlighted(_ text: String, _ query: String) -> AttributedString {
 struct ActivityLine: View {
     let model: AppModel
     let session: LiveSession
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var prefix: String?
 
     static func isShown(_ s: LiveSession, _ model: AppModel) -> Bool {
         s.isLeftover || s.state != .idle || (model.activity[s.sessionId]?.subagents.isEmpty == false)
@@ -208,20 +203,32 @@ struct ActivityLine: View {
         let a = model.activity[s.sessionId]
         let agents = a.map(\.subagents.count).flatMap { $0 > 0 ? "\(Fmt.count($0, "agent"))" : nil }
         let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
-        let text = [doing ?? Self.stateText(s), agents].compactMap { $0 }.joined(separator: " · ")
-        Group {
-            if let since = model.busySince[s.sessionId], s.state == .busy {
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    let t = max(0, Int(ctx.date.timeIntervalSince(since)))
-                    Text("\(text) · \(t / 60):\(String(format: "%02d", t % 60))")
-                        .contentTransition(.numericText(countsDown: false))
-                        .animation(Motion.fast(reduceMotion), value: t)
+        let timed = s.state == .busy && model.busySince[s.sessionId] != nil
+        let status = Self.isShown(s, model) ? [doing ?? (timed ? nil : Self.stateText(s)), agents].compactMap { $0 }.joined(separator: " · ") : ""
+        let tint: Color = s.state == .blocked && !s.isLeftover ? .orange : .secondary
+        // The folder gives way first, so the status and its timer stay readable.
+        HStack(spacing: 0) {
+            if let prefix {
+                Text(prefix).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
+            if !status.isEmpty || timed {
+                let lead = prefix == nil ? "" : " · "
+                Group {
+                    if let since = model.busySince[s.sessionId], s.state == .busy {
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            let t = max(0, Int(ctx.date.timeIntervalSince(since)))
+                            Text("\(lead)\(status.isEmpty ? "" : status + " ")\(t / 60):\(String(format: "%02d", t % 60))")
+                                .accessibilityLabel("working for \(t / 60) minutes \(t % 60) seconds")
+                        }
+                    } else {
+                        Text(lead + status)
+                    }
                 }
-            } else {
-                Text(text)
+                .foregroundStyle(tint).lineLimit(1).truncationMode(.tail)
+                .layoutPriority(1)
             }
         }
-        .font(.subheadline).foregroundStyle(s.state == .blocked ? Color.orange : .secondary).lineLimit(1).truncationMode(.tail)
+        .font(.subheadline)
     }
 
     static func stateText(_ s: LiveSession) -> String {
@@ -230,46 +237,6 @@ struct ActivityLine: View {
         case .busy: return "working"
         case .idle: return "idle"
         case .blocked: return "waiting for you"
-        }
-    }
-}
-
-struct CompactUsage: View {
-    let model: AppModel
-    let action: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        if let u = model.usage {
-            let closer = [u.fiveHour, u.weekly].compactMap { $0 }.max { $0.percent() < $1.percent() }
-            Button(action: action) {
-                HStack(spacing: 8) {
-                    parts(u).lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text(Fmt.resets(closer?.resetsAt)).foregroundStyle(.secondary).lineLimit(1)
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(hover ? .secondary : .tertiary)
-                }
-                .font(.subheadline).monospacedDigit()
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(hover ? Color.primary.opacity(0.05) : .clear))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .onHover { hover = $0 }
-            .help("Open usage details")
-            .accessibilityLabel(model.barSummary)
-        }
-    }
-
-    private func parts(_ u: UsageSnapshot) -> Text {
-        var items: [(String, Double)] = []
-        if let w = u.fiveHour { items.append(("5h", w.percent())) }
-        if let w = u.weekly { items.append(("Weekly", w.percent())) }
-        return items.enumerated().reduce(Text("")) { out, e in
-            let (label, pct) = e.element
-            let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= Notifier.warnAt ? .semibold : .regular)
-                .foregroundColor(pct >= Notifier.warnAt ? Level.color(pct) : .primary)
-            return out + Text(e.offset == 0 ? "" : " · ").foregroundColor(.secondary) + Text("\(label) ").foregroundColor(.secondary) + value
         }
     }
 }
@@ -326,6 +293,9 @@ enum Radius {
 
 struct LastHourBar: View {
     let model: AppModel
+    var collapsible = false
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct Part: Identifiable { let id: String, name: String, points: Double, color: Color }
 
@@ -336,7 +306,7 @@ struct LastHourBar: View {
         var parts = tokens.sorted { $0.value > $1.value }.compactMap { id, n in
             model.live.first { $0.sessionId == id }.map { Part(id: id, name: model.displayName($0), points: h.mine * Double(n) / sum, color: SessionColor.of(id)) }
         }
-        if parts.isEmpty && h.mine > 0 { parts = [Part(id: "mac", name: "This Mac", points: h.mine, color: .accentColor)] }
+        if parts.isEmpty && h.mine > 0 { parts = [Part(id: "mac", name: "This Mac", points: h.mine, color: .teal)] }
         if h.others > 0 { parts.append(Part(id: "others", name: "Other Macs on this login", points: h.others, color: Color.secondary.opacity(0.6))) }
         return parts.filter { $0.points > 0 }
     }
@@ -345,11 +315,30 @@ struct LastHourBar: View {
         let total = model.lastHour.total
         if total >= 1 {
             let parts = parts
+            let sessions = parts.filter { $0.id != "others" && $0.id != "mac" }.count
+            let others = parts.contains { $0.id == "others" }
+            let open = expanded || !collapsible
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 4) {
-                    Text("Last hour").fontWeight(.semibold)
-                    Text("+\(Int(total.rounded()))% of the 5-hour limit").foregroundStyle(.secondary)
+                Button {
+                    withAnimation(Motion.snappy(reduceMotion)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Last hour").fontWeight(.semibold)
+                        Text(open ? "+\(Int(total.rounded()))% of the 5-hour limit"
+                             : "+\(Int(total.rounded()))% · \([sessions > 0 ? Fmt.count(sessions, "session") : nil, others ? "other Macs" : nil].compactMap { $0 }.joined(separator: " + "))")
+                            .foregroundStyle(.secondary).lineLimit(1)
+                        if collapsible {
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(open ? 90 : 0))
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(!collapsible)
+                .help(collapsible ? (open ? "Hide the split by session" : "Show the split by session") : "")
+                if open {
                 GeometryReader { g in
                     HStack(spacing: 2) {
                         ForEach(parts) { p in
@@ -366,6 +355,7 @@ struct LastHourBar: View {
                         Spacer(minLength: 8)
                         Text(p.points < 1 ? "<1%" : "\(Int(p.points.rounded()))%").monospacedDigit().foregroundStyle(.secondary)
                     }
+                }
                 }
             }
             .font(.subheadline)

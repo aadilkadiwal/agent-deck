@@ -2,12 +2,12 @@
 
 A macOS menu bar app for your [Claude Code](https://claude.com/claude-code) sessions:
 
-- **Usage at a glance**: rings for your 5-hour and weekly limits with reset times (the same numbers `/usage` shows), plus a pace line: "At this pace: 100% at 3:40 PM". The menu bar shows whichever limit is closer to running out.
-- **Live session list**: every running session, newest first, each with its own color (the same color marks its prompt cards), its git branch, and what it's doing right now ("Bash: npm test · 2 agents · 1:23") next to a bar showing how full its context is (amber from 70%, red from 90%), with quick search (name, folder, prompt or ID). A row's buttons show when you point at it or select it. One click compacts a session's context (`/compact`, keeps a summary); Clear is in the right-click menu. ⌘K lists every action for the selected row. Grouped by project when more than five are running. An amber dot on the menu bar icon and "N waiting" next to it mean a session is waiting for you.
-- **Answer Claude from the menu bar**: permission prompts (Allow / Always allow / Deny), questions and plans (*Approve*, or *Approve, auto-accept edits*) show up as cards at the top of the dropdown and as notifications with answer buttons. ⌃⌥A / ⌃⌥D allow or deny from any app. Risky shell commands (deleting folders, force-pushing, `sudo`, piping a download into a shell…) are marked **RISKY** and can only be allowed with a click. The prompt stays in the terminal too: whichever you answer first wins.
-- **Pin and shortcut**: pin the dropdown as a panel that floats above your terminal (full, or small: one line per session), or turn on ⌃⌥O to open it from any app (Settings → Shortcuts, or the welcome card on first open).
+- **Usage at a glance**: Dot, the app's face, leads the dropdown with one line ("2 working · 1 idle / Nothing needs you") and slim bars for your 5-hour and weekly limits with reset times (the same numbers `/usage` shows). A bar is grey, orange from your warning level, red when full, and says when the limit runs out at this pace. The menu bar shows the closer limit as a number ("86% · out 14:48", "100% · back 15:45"); Dot's rim there is the same meter.
+- **Live session list**: every running session, newest first: a blue dot while it works, orange when it waits for you. Under the name, its folder, its branch when that isn't main, and what it's doing right now ("Iias · Bash: npm test · 2 agents 1:23"); the full path is in the tooltip. Context shows once it reaches 70% (red from 90%). Quick search by name, folder, prompt or ID. A row's buttons show when you point at it or select it. One click compacts a session's context (`/compact`, keeps a summary); Clear is in the right-click menu. ⌘K lists every action for the selected row. Grouped by project when more than five are running. An orange "!" on Dot in the menu bar means a session is waiting for you; the tooltip says how many.
+- **Answer Claude from the menu bar**: permission prompts (Allow / Always allow / Deny), questions and plans (*Approve*, or *Approve, auto-accept edits*) show up as cards at the top of the dropdown and in the Waiting tab, the same card in both, and as alerts with answer buttons. ⌃⌥A / ⌃⌥D allow or deny the oldest prompt from any app; in the dropdown, ⌘⏎ approves and ⌘⌫ denies the selected card. Risky shell commands (deleting folders, force-pushing, `sudo`, piping a download into a shell…) are marked **RISKY** in red, Deny is the main button, and they can only be allowed with a click. The prompt stays in the terminal too: whichever you answer first wins.
+- **Shortcut**: turn on ⌃⌥O to open the dropdown from any app (Settings → Shortcuts, or the welcome card on first open).
 - **Health**: Settings (⌘,) shows whether every hook is set up, and repairs them in one click.
-- **Alerts**: a session needs your answer, a long task finished, a limit reached your warning level (80% unless you change it in Settings) or is on pace to run out before it resets. They drop from the notch (or from the menu bar icon on a screen without one) with Dot, whose face shows what happened and whose rim is your usage, and a sound for each kind: needs you, limit, or done. When you're away they go out as macOS notifications. Each can be switched off.
+- **Alerts**: a session needs your answer, a long task finished, a limit reached your warning level (80% unless you change it in Settings) or is on pace to run out before it resets. They drop from the notch (or from the menu bar icon on a screen without one) with Dot, whose face shows what happened and whose rim is your usage, and a sound for each kind: needs you, limit, or done. Settings → Notifications plays a sample of each. When you're away they go out as macOS notifications. Each can be switched off.
 - **Phone in one click**: make a running session reachable from the Claude phone app while it keeps running on your Mac, or disconnect the phone again. No restart.
 - **Rename** running sessions (types `/rename`) and closed ones.
 - **New session without a terminal**: pick a folder, then start it for your phone or open it in iTerm.
@@ -15,7 +15,7 @@ A macOS menu bar app for your [Claude Code](https://claude.com/claude-code) sess
 - **Usage patterns**: a weekday × hour heatmap of when your 5-hour limit rises, and how often it was reached.
 - **Full cleanup**: deleting a session also removes its scratchpad, undo backups and other data Claude Code keeps for it, and lets you pick files it created in your project. Settings shows Claude's storage and clears leftovers of sessions that are already gone.
 
-Design walkthrough with clickable mockups and every flow: [`docs/design.html`](docs/design.html).
+A short tour of the real screens: [`docs/design.html`](docs/design.html).
 
 ## Install
 
@@ -49,7 +49,7 @@ Agent Deck has no server and no login. It reads what Claude Code already writes,
 | Shows / does | Source |
 |---|---|
 | Running sessions, busy/idle, phone on/off | `~/.claude/sessions/<pid>.json` (watched for changes) + `claude agents --json` |
-| Usage rings | `rate_limits` from the status line JSON, saved by the tap to `~/.claude/agent-deck/status.json` |
+| Usage bars | `rate_limits` from the status line JSON, saved by the tap to `~/.claude/agent-deck/status.json` |
 | History, names, models, sizes | Head and tail of `~/.claude/projects/*/*.jsonl` (cached) |
 | 📱 on a running session (iTerm) | Types `/remote-control` into that exact tab, found by its tty, the same as typing it yourself. It keeps running on the Mac **and** is on your phone. Clicking again chooses *Disconnect* from that menu, so it leaves the phone but keeps running. Works while it's working or running agents too (`/remote-control` runs at once, like in the terminal); not while it's asking you something. If you've typed something in its prompt, nothing is sent and your text is left as it was. |
 | 📱 on a background session | It has no window, so it reopens in iTerm with `claude --resume <id> --remote-control`: on your Mac and your phone. |
@@ -71,7 +71,6 @@ Agent Deck has no server and no login. It reads what Claude Code already writes,
 | ⌃⌥A / ⌃⌥D | Carbon hotkeys, registered only while a permission prompt is waiting, so they're free for other apps otherwise. No Accessibility permission needed. ⌃⌥A never allows a command marked risky. |
 | Risky commands | Pattern checks on the shell command (`Risk` in `Approvals.swift`): recursive `rm`, force push, `git reset --hard` / `clean -f`, `sudo`, `curl … \| sh`, disk tools, `chmod 777`, `DROP TABLE`, `find -delete`. A heuristic: a command it doesn't flag isn't proven safe. |
 | Open the menu shortcut | A Carbon hotkey, off until you turn it on (⌃⌥O, ⌃⌥Space or ⌃⌥⌘A in Settings → Shortcuts), that clicks Agent Deck's own menu bar item. If another app already owns the combination, Settings says so. |
-| Pinned panel | A floating window (`NSPanel`) with the usage line, prompt cards and running sessions; its small mode shows one line per session, and a waiting one opens the dropdown with its card selected. It stays above other apps and on every Space until you unpin it, and comes back at launch if it was pinned. |
 | Conversation, branch, duration | Read from the transcript: user and assistant lines (subagent lines left out), `gitBranch`, and the first and last message `timestamp`. |
 | Usage heatmap | The usage log's 5-hour readings: each rise is added to its weekday and hour. |
 | Check for updates | `git fetch` in the folder the installer built from; Update pulls and re-runs `install.sh` |

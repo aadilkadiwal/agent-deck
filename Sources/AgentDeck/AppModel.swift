@@ -57,9 +57,7 @@ final class AppModel {
         }
     }
     var detailsOpen = false
-    var pinnedOpen = false
     @ObservationIgnored var showDetails: ((DetailsTab) -> Void)?
-    @ObservationIgnored var focusApproval: Int?
     private(set) var menuHotkeyFailed = false
 
     let paths = ClaudePaths()
@@ -114,7 +112,14 @@ final class AppModel {
         notifier.onSwitch = { [weak self] in self?.switchToSonnet() }
         notifier.onDecide = { [weak self] id, answer in self?.answer(id, answer) }
         notifier.onReview = { StatusMenu.open() }
-        notifier.peek = { [weak self] alert in Peek.show(alert, percent: self?.shownPercent) }
+        notifier.peek = { [weak self] alert in
+            // With the dropdown open the prompt is already there as a card: just the sound.
+            if self?.menuOpen == true, alert.kind == .needs || alert.kind == .risky {
+                NSSound(named: alert.kind.sound)?.play()
+                return true
+            }
+            return Peek.show(alert, percent: self?.shownPercent)
+        }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
         hotkeys.onMenu = { StatusMenu.toggle() }
@@ -137,19 +142,32 @@ final class AppModel {
     var shownPercent: Double? { [usage?.fiveHour?.percent(), usage?.weekly?.percent()].compactMap { $0 }.max() }
 
     var needsYou: Bool { live.contains { $0.state == .blocked && !$0.isLeftover } }
+
+    var closestWindow: LimitWindow? { [usage?.fiveHour, usage?.weekly].compactMap { $0 }.max { $0.percent() < $1.percent() } }
+
+    func mood(for shown: LimitWindow?) -> DotMood {
+        let pct = shown?.percent() ?? 0
+        let out = shown.map { if case .reachesLimit(let at) = forecast($0), at > Date() { true } else { false } } ?? false
+        if pendingApprovals.contains(where: { $0.risk != nil }) { return .risky }
+        if needsYou || !pendingApprovals.isEmpty { return .needs }
+        if pct >= LimitWindow.full { return .reached }
+        if pct >= Notifier.warnAt { return out ? .runsOut : .warn }
+        return count(.busy) > 0 ? .working : .idle
+    }
     func count(_ state: LiveSession.State) -> Int { live.filter { $0.state == state && !$0.isLeftover }.count }
 
     private(set) var usageIsAccount = false
 
-    var accountStatusText: String {
+    var usageSourceText: String {
+        let when = usage.map { " · updated \(Fmt.ago($0.updatedAt))" } ?? ""
         switch accountStatus {
-        case nil: return usage == nil ? "checking…" : "not needed while Claude Code runs here: its status line has the account's numbers"
-        case .ok(let u)?: return usageIsAccount ? "updated \(Fmt.ago(u.updatedAt)) · includes everyone on this login"
-            : "not needed while Claude Code runs here: its status line has the account's numbers"
-        case .signedOut?: return "not signed in to Claude Code"
-        case .expired?: return "login expired · open Claude Code once"
-        case .rateLimited?: return "Anthropic asked to slow down · trying again in \(Int(accountBackoff / 60)) min, using this Mac's status line meanwhile"
-        case .failed?: return "couldn't reach Anthropic · using this Mac's status line"
+        case .signedOut?: return "Not signed in to Claude Code"
+        case .expired?: return "Login expired · open Claude Code once"
+        case .rateLimited?: return "Anthropic asked to slow down · trying again in \(Int(accountBackoff / 60)) min"
+        case .failed?: return "Couldn't reach Anthropic · showing this Mac's last numbers" + when
+        case .ok?, nil:
+            guard usage != nil else { return "None yet · they arrive with your next Claude Code message" }
+            return (usageIsAccount ? "From Anthropic, for the whole account" : "From Claude Code on this Mac") + when
         }
     }
 
@@ -288,7 +306,7 @@ final class AppModel {
     }
 
     private func refreshOnce(history forceHistory: Bool, agents forceAgents: Bool) async {
-        let agentsEvery: TimeInterval = (menuOpen || detailsOpen || pinnedOpen) ? 5 : 60
+        let agentsEvery: TimeInterval = (menuOpen || detailsOpen) ? 5 : 60
         if let cli, forceAgents || Date().timeIntervalSince(lastAgentsFetch) >= agentsEvery {
             lastAgentsFetch = Date()
             lastAgents = await cli.listAgentsJSON()
@@ -514,7 +532,7 @@ final class AppModel {
     }
 
     func newOnPhone(folder: String, name: String) {
-        perform("new", success: "Started a session in \(Fmt.folderName(folder)). It's on your phone now.") {
+        perform("new", success: "Started a session in \(Fmt.folderTitle(folder)). It's on your phone now.") {
             try await $0.newOnPhone(cwd: folder, name: name)
         }
     }
@@ -734,7 +752,7 @@ final class AppModel {
     }
 
     func sessionName(_ sessionId: String, cwd: String) -> String {
-        live.first { $0.sessionId == sessionId }.map(displayName) ?? Fmt.folderName(cwd)
+        live.first { $0.sessionId == sessionId }.map(displayName) ?? Fmt.folderTitle(cwd)
     }
 
     // MARK: Health
@@ -811,6 +829,15 @@ enum Fmt {
         return p
     }
 
+    static func folderTitle(_ path: String) -> String { path == home ? "Home" : folderName(path) }
+
+    static func place(_ cwd: String, branch: String?, name: String, grouped: Bool = false) -> String? {
+        let folder = folderTitle(cwd)
+        let showFolder = !grouped && !folder.isEmpty && !name.localizedCaseInsensitiveContains(folder)
+        let parts = [showFolder ? folder : nil, branch.flatMap { $0 == "main" || $0 == "master" ? nil : $0 }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     static func ago(_ d: Date) -> String {
         let now = Date()
         if now.timeIntervalSince(d) < 60 { return "now" }
@@ -854,12 +881,9 @@ enum Fmt {
         return m < 60 ? "\(max(m, 1)) min" : "\(m / 60) h \(m % 60) min"
     }
 
-    static func forecast(_ f: Forecast) -> String? {
-        switch f {
-        case .reachesLimit(let at): return at <= Date() ? "Limit reached" : "\(clock(at)) · runs out"
-        case .safeUntilReset: return "Lasts until reset"
-        case .unknown: return nil
-        }
+    static func span(_ t: TimeInterval) -> String {
+        let m = Int(t / 60)
+        return m < 60 ? "\(max(m, 1)) min" : m < 48 * 60 ? "\(m / 60) h" : "\(m / 1440) d"
     }
 
     // Foundation's grammar agreement ("1 session", "3 sessions"), so plurals stay localizable.
