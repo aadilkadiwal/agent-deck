@@ -365,7 +365,6 @@ struct SessionsTab: View {
                         Text(highlighted(r.name, search)).lineLimit(1)
                         if r.live?.isOnPhone == true { Image(systemName: "iphone").foregroundStyle(Color.accentColor).help("On your phone") }
                         if r.live?.kind == .background { Pill(text: "Background").help("Background session: it runs without a terminal window") }
-                        if let a = r.live?.agent, a != .claude { Pill(text: a.label.uppercased(), color: a == .codex ? .teal : .blue) }
                     }
                     if let p = r.promptLine {
                         Text(highlighted("“\(p)”", search)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
@@ -484,17 +483,15 @@ struct SessionsTab: View {
 
     private func primary(for r: SessionRow) -> Inspector<EmptyView>.Primary {
         if let s = r.live {
-            return .init(title: s.kind == .interactive || s.agent != .claude ? "Show its window" : "Open in iTerm", symbol: "macwindow") { model.open(s) }
+            return .init(title: s.kind == .interactive ? "Show its window" : "Open in iTerm", symbol: "macwindow") { model.open(s) }
         }
         return .init(title: "Resume in iTerm", symbol: "terminal") { open(r) }
     }
 
     @ViewBuilder private func actions(for r: SessionRow, includeOpen: Bool) -> some View {
         Button("Rename…") { renaming = r }
-            .disabled(r.live.map { $0.agent != .claude || $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
-        if let s = r.live, s.agent != .claude {
-            if includeOpen { Button("Show its window") { model.open(s) } }
-        } else if let s = r.live {
+            .disabled(r.live.map { $0.kind == .background || model.typingBlockers[$0.sessionId] != nil } ?? false)
+        if let s = r.live {
             if includeOpen { Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) } }
             if s.kind == .interactive {
                 Button("Compact context") { model.compact(s) }
@@ -764,7 +761,6 @@ struct UsageTab: View {
                             .frame(width: 140)
                         }
                         Spacer(minLength: 0)
-                        if !model.codexUsage.isEmpty { codex }
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -814,23 +810,6 @@ struct UsageTab: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    private var codex: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Codex").font(.body.weight(.semibold))
-            ForEach(model.codexUsage) { l in
-                HStack(spacing: 8) {
-                    Ring(percent: l.percent, size: 28, line: 4)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("\(l.label) · \(Int(l.percent.rounded()))%").font(.callout.weight(.medium)).monospacedDigit()
-                        Text(Fmt.resets(l.resetsAt)).font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
     }
 }
 

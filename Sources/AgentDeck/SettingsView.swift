@@ -35,7 +35,7 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var old: [HistorySession] { model.closed.filter { $0.lastActive < cutoff } }
-    static let hookKeys = [("claude", "Claude Code hooks"), ("codex", "Codex hooks"), ("gemini", "Gemini CLI hooks"), ("statusLine", "Status line (usage numbers)")]
+    static let hookKeys = [("claude", "Claude Code hooks"), ("statusLine", "Status line (usage numbers)")]
 
     private func healthRow(_ title: String, _ state: String?) -> some View {
         LabeledContent(title) {
@@ -272,7 +272,7 @@ struct SettingsView: View {
                 Button("Repair hooks") { Task { await model.repairHooks() } }
             }
         } header: { Text("Health") } footer: {
-            Text("Repair puts Agent Deck's hooks back without touching your own. Codex runs a new hook only after you approve it once: open Codex and type /hooks. A missing status line comes back by running install.sh again.")
+            Text("Repair puts Agent Deck's hooks back without touching your own. A missing status line comes back by running install.sh again.")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
 

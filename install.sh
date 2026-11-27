@@ -101,7 +101,7 @@ else:
     print("    \033[32m✓\033[0m already connected")
 PY
 
-step "Connecting Claude Code, Codex and Gemini CLI (prompts and activity)"
+step "Connecting Claude Code (prompts and activity)"
 python3 "$SRC/scripts/hook.py" install
 
 step "Opening Agent Deck"

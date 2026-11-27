@@ -44,7 +44,6 @@ final class AppModel {
     private(set) var continueQueue = Set<String>()
     private(set) var branches: [String: String] = [:]
     private(set) var context: [String: ContextReading] = [:]
-    private(set) var codexUsage: [CodexUsage.Limit] = []
     private(set) var accountStatus: AccountUsage.Result?
     /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
     private(set) var health: [String: Any]?
@@ -75,11 +74,8 @@ final class AppModel {
     private var lastAgentsFetch = Date.distantPast
     private var lastAutoClean = Date.distantPast
     private var approvalServer: ApprovalServer?
-    /// Codex and Gemini sessions, known only from their hooks.
-    private var others: [String: LiveSession] = [:]
     /// Sessions whose plan was approved with "auto-accept edits": applied at their next edit prompt.
     private var autoAcceptEdits = Set<String>()
-    private var lastCodexUsage = Date.distantPast
     private var lastAccountFetch = Date.distantPast
     private var accountBackoff: TimeInterval = 0
     private var lastAccount = ClaudeAccount.current()
@@ -194,7 +190,7 @@ final class AppModel {
     }
 
     func isStoppedAtLimit(_ s: LiveSession) -> Bool {
-        s.agent == .claude && s.state == .idle && recentUse.stoppedAtLimit.contains(s.sessionId)
+        s.state == .idle && recentUse.stoppedAtLimit.contains(s.sessionId)
     }
 
     func toggleContinue(_ s: LiveSession) {
@@ -211,7 +207,7 @@ final class AppModel {
 
     var switchCandidates: [LiveSession] {
         live.filter { s in
-            s.agent == .claude && s.state == .idle && typingBlockers[s.sessionId] == nil && s.kind == .interactive
+            s.state == .idle && typingBlockers[s.sessionId] == nil && s.kind == .interactive
                 && (history.first { $0.sessionId == s.sessionId }?.model.map { $0.contains("opus") || $0.contains("fable") } ?? false)
         }
     }
@@ -297,13 +293,7 @@ final class AppModel {
             lastAgentsFetch = Date()
             lastAgents = await cli.listAgentsJSON()
         }
-        others = others.filter { $0.value.pid.map { kill($0, 0) == 0 } ?? true }
-        let waiting = Set(approvals.map(\.sessionId))
-        let next = (LiveSessions.load(paths, agentsJSON: lastAgents) + others.values.map { s in
-            var s = s
-            if waiting.contains(s.sessionId) { s.state = .blocked }
-            return s
-        }).sorted { $0.startedAt > $1.startedAt }
+        let next = LiveSessions.load(paths, agentsJSON: lastAgents).sorted { $0.startedAt > $1.startedAt }
         if next != live {
             notifier.sessionsChanged(from: live, to: next, name: displayName)
             let now = Date()
@@ -312,21 +302,16 @@ final class AppModel {
             activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
             updateRecentFolders()
             let (blockers, br) = await Task.detached {
-                (Dictionary(next.filter { $0.agent == .claude }.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } },
+                (Dictionary(next.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } },
                             uniquingKeysWith: { a, _ in a }),
                  Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a }))
             }.value
             if blockers != typingBlockers { typingBlockers = blockers }
             if br != branches { branches = br }
         }
-        let ctx = Dictionary(uniqueKeysWithValues: live.filter { $0.agent == .claude }.compactMap { s in
+        let ctx = Dictionary(uniqueKeysWithValues: live.compactMap { s in
             ContextUsage.load(paths, sessionId: s.sessionId).map { (s.sessionId, $0) } })
         if ctx != context { context = ctx }
-        if Date().timeIntervalSince(lastCodexUsage) > 30 {
-            lastCodexUsage = Date()
-            let u = await Task.detached { CodexUsage.load() }.value
-            if u != codexUsage { codexUsage = u }
-        }
         dropAnsweredElsewhere()
         await refreshUsage()
         if forceHistory || Date().timeIntervalSince(lastHistoryScan) > 60 { await refreshHistory() }
@@ -540,7 +525,6 @@ final class AppModel {
     func open(_ s: LiveSession) {
         Task {
             if s.kind == .interactive, let pid = s.pid, await ClaudeCLI.focusTerminal(pid: pid, cwd: s.cwd) { return }
-            guard s.agent == .claude else { return }
             openTerminal(ClaudeCLI.ShellLine.attach(s.shortId))
         }
     }
@@ -653,7 +637,6 @@ final class AppModel {
     }
 
     private func received(_ r: ApprovalRequest) {
-        if r.agent != .claude { track(r.agent, r.sessionId, cwd: r.cwd, pid: r.pid, state: .blocked) }
         if r.kind == .permission, Self.editTools.contains(r.toolName), autoAcceptEdits.remove(r.sessionId) != nil {
             approvalServer?.answer(r.id, .acceptEdits)
             return
@@ -693,21 +676,6 @@ final class AppModel {
         default: break
         }
         activity[sid] = a
-        guard e.agent != .claude else { return }
-        switch e.name {
-        case "SessionEnd": others[sid] = nil; activity[sid] = nil
-        case "SessionStart", "Stop": track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .idle)
-        case "Notification": track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .blocked)
-        default: track(e.agent, sid, cwd: e.cwd, pid: e.pid, state: .busy)
-        }
-        Task { await refresh() }
-    }
-
-    private func track(_ agent: Agent, _ sid: String, cwd: String, pid: Int32?, state: LiveSession.State) {
-        var s = others[sid] ?? LiveSession(agent: agent, sessionId: sid, pid: pid, cwd: cwd, state: state)
-        s.state = state
-        s.pid = s.pid ?? pid
-        others[sid] = s
     }
 
     func answer(_ id: Int, _ a: ApprovalAnswer) {
@@ -790,7 +758,7 @@ final class AppModel {
     }
 
     var missingHooks: Set<String> {
-        Set(["claude", "codex", "gemini", "statusLine"].filter { health?[$0] as? String == "missing" })
+        Set(["claude", "statusLine"].filter { health?[$0] as? String == "missing" })
     }
 
     func projectUsage(since: Date) async -> [ProjectUsage.Entry] {
@@ -801,7 +769,7 @@ final class AppModel {
     func repairHooks() async {
         let out = await Self.python(hookScript, "install")
         banner = out == nil ? Banner(text: "Couldn't repair the hooks. Run install.sh again.", isError: true)
-                            : Banner(text: "Hooks repaired. In Codex, approve them once in /hooks.")
+                            : Banner(text: "Hooks repaired.")
         await checkHealth()
     }
 

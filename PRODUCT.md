@@ -10,7 +10,7 @@ The design language is Apple's (Impeccable has no separate macOS value). The app
 
 ## Users
 
-Developers who run several coding-agent sessions at once (mainly Claude Code, also Codex and Gemini CLI) in iTerm on a Mac. They work in the terminal and glance at Agent Deck between tasks: to answer a prompt, see which session is working or waiting, check how close they are to a usage limit, or find and resume an old session.
+Developers who run several Claude Code sessions at once in iTerm on a Mac. They work in the terminal and glance at Agent Deck between tasks: to answer a prompt, see which session is working or waiting, check how close they are to a usage limit, or find and resume an old session.
 
 ## Product Purpose
 
@@ -29,7 +29,7 @@ Agent Deck controls sessions instead of only showing numbers. It answers Claude 
 
 ## Capabilities and Constraints
 
-- Data sources: `~/.claude/sessions/*.json`, `claude agents --json`, transcripts under `~/.claude/projects`, the status line JSON (via a tap script), Codex and Gemini hook events.
+- Data sources: `~/.claude/sessions/*.json`, `claude agents --json`, transcripts under `~/.claude/projects`, the status line JSON (via a tap script), Claude Code hook events.
 - Typing into a session only happens when it's idle (or for immediate commands), never into a draft or a pending question.
 - Deletes go to the Trash with Undo.
 - Risky shell commands (pattern heuristic) can't be allowed with a shortcut or a notification button.
@@ -60,5 +60,4 @@ Agent Deck controls sessions instead of only showing numbers. It answers Claude 
 These were inferred from the code and README, not confirmed in an interview. Run `/impeccable init` to confirm or correct them:
 
 - Audience beyond Claude Code power users (teams? newcomers?).
-- Whether Codex and Gemini support should get equal design weight.
 - Brand voice: currently plain and direct; no visual brand beyond the system look.

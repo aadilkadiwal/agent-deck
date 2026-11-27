@@ -265,7 +265,6 @@ struct CompactUsage: View {
         var items: [(String, Double)] = []
         if let w = u.fiveHour { items.append(("5h", w.percent())) }
         if let w = u.weekly { items.append(("Weekly", w.percent())) }
-        if let l = model.codexUsage.first { items.append(("Codex", l.percent)) }
         return items.enumerated().reduce(Text("")) { out, e in
             let (label, pct) = e.element
             let value = Text("\(Int(pct.rounded()))%").fontWeight(pct >= Notifier.warnAt ? .semibold : .regular)

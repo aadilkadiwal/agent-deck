@@ -185,8 +185,7 @@ struct ApprovalCard: View {
     private var title: String {
         switch request.kind {
         case .permission:
-            let what = ApprovalRequest.shellTools.contains(request.toolName) ? "wants to run a command" : "wants to use \(request.toolName)"
-            return "\(request.agent == .claude ? "" : "(\(request.agent.label)) ")\(what)"
+            return request.toolName == "Bash" ? "wants to run a command" : "wants to use \(request.toolName)"
         case .plan: return "has a plan for you"
         case .question: return request.questions.count == 1 ? "asks" : "asks \(request.questions.count) questions"
         }

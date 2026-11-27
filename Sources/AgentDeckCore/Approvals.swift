@@ -12,7 +12,6 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
 
     public let id: Int
     public let kind: Kind
-    public let agent: Agent
     public let pid: Int32?
     public let sessionId: String
     public let cwd: String
@@ -27,7 +26,6 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
 
     private static let maxDetail = 4000
 
-    public static let shellTools: Set<String> = ["Bash", "shell", "exec_command", "local_shell"]
 
     public static func parse(_ data: Data, id: Int) -> ApprovalRequest? {
         guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -43,15 +41,12 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
         switch kind {
         case .permission:
             detail = summary(tool: tool, input: input)
-            if shellTools.contains(tool) {
-                // An argument list's last item is usually the shell's -c script: check it on its own too.
-                risk = Risk.of(command: detail) ?? (input["command"] as? [String])?.last.flatMap(Risk.of(command:))
-            }
+            if tool == "Bash" { risk = Risk.of(command: detail) }
         case .plan: detail = input["plan"] as? String ?? ""
         case .question: detail = ""
         }
         return ApprovalRequest(
-            id: id, kind: kind, agent: (o["agent"] as? String).flatMap(Agent.init) ?? .claude,
+            id: id, kind: kind,
             pid: (o["pid"] as? NSNumber)?.int32Value, sessionId: sid, cwd: p["cwd"] as? String ?? "", toolName: tool,
             detail: String(detail.prefix(maxDetail)),
             description: (input["description"] as? String).flatMap { $0.isEmpty ? nil : $0 },
@@ -66,8 +61,6 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
             ((text as? String) ?? "").split(separator: "\n", omittingEmptySubsequences: false).prefix(60).map { prefix + $0 }
         }
         if let cmd = input["command"] as? String { return cmd }
-        // Codex sends its command as an argument list.
-        if let args = input["command"] as? [String] { return args.joined(separator: " ") }
         if let path = (input["file_path"] ?? input["notebook_path"]) as? String {
             var out: [String] = []
             switch tool {
@@ -116,8 +109,8 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
 /// A heuristic: a command it doesn't flag isn't proven safe.
 public enum Risk {
     // Matches only where a command starts, so `git rm -r` or `echo "rm -rf x"` don't count. A shell's
-    // `-c` script starts one, quoted or not: `sh -c "rm -rf x"`, and Codex's argument lists, which
-    // arrive joined with spaces (`bash -lc rm -rf ~`). So do backticks and `$(`.
+    // `-c` script starts one, quoted or not (`sh -c "rm -rf x"`, `bash -lc rm -rf ~`), and so do
+    // backticks and `$(`.
     private static let start = #"(^|[;&|(\n`]\s*|\b(sudo|xargs|then|do|exec|env|nohup|command|time)\s+|\s-[a-z]*c\s+["']?)"#
     private static let rmRecursive = start + #"(\S*/)?rm\s+(-{1,2}[a-zA-Z-]+\s+)*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b"#
 

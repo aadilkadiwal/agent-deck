@@ -45,7 +45,7 @@ struct MenuView: View {
     private var showSearch: Bool { model.live.count > 5 || searchAsked || searching }
 
     private var cards: [ApprovalRequest] { only == nil || only == .blocked ? model.approvals : [] }
-    /// Waiting sessions with no card (Gemini, approvals off, a prompt Agent Deck can't answer).
+    /// Waiting sessions with no card (approvals off, or a prompt Agent Deck can't answer).
     private var waitingRows: [LiveSession] {
         guard only == nil || only == .blocked else { return [] }
         let carded = Set(model.approvals.map(\.sessionId))
@@ -257,9 +257,8 @@ struct MenuView: View {
     @ViewBuilder private var healthBanner: some View {
         let missing = model.missingHooks
         if !missing.isEmpty {
-            let text = !missing.isDisjoint(with: ["claude", "codex"]) ? "Prompts can't be answered here until setup is repaired"
-                : missing.contains("statusLine") ? "Usage and context won't update until setup is repaired"
-                : "Gemini CLI sessions won't show until setup is repaired"
+            let text = missing.contains("claude") ? "Prompts can't be answered here until setup is repaired"
+                : "Usage and context won't update until setup is repaired"
             Callout(tint: .orange, outlined: true) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -409,24 +408,6 @@ struct MenuView: View {
                     .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(8)
         }
-        if !model.codexUsage.isEmpty {
-            HStack(spacing: 10) {
-                Text("Codex").fontWeight(.semibold)
-                ForEach(model.codexUsage) { l in
-                    HStack(spacing: 4) {
-                        Ring(percent: l.percent, size: 12, line: 2.5, showsLabel: false)
-                        Text("\(l.label) \(Int(l.percent.rounded()))%").monospacedDigit()
-                            .foregroundStyle(l.percent >= Notifier.warnAt ? Level.color(l.percent) : .secondary)
-                            .contentTransition(.numericText(value: l.percent))
-                            .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
-                    }
-                    .help(Fmt.resetsTitle(l.resetsAt))
-                    .accessibilityElement(children: .combine)
-                }
-                Spacer()
-            }
-            .font(.subheadline).padding(.horizontal, 8).padding(.top, 4)
-        }
     }
 
     private func matches(_ text: String...) -> Bool {
@@ -540,7 +521,6 @@ struct MenuView: View {
                         Text(highlighted(model.displayName(s), search)).font(.body.weight(waiting ? .semibold : .medium)).lineLimit(1)
                         if s.isOnPhone { Image(systemName: "iphone").font(.system(size: 10)).foregroundStyle(Color.accentColor).help("On your phone") }
                         if s.kind == .background { Pill(text: "Background").help("Background session: it runs without a terminal window") }
-                        if s.agent != .claude { Pill(text: s.agent.label.uppercased(), color: s.agent == .codex ? .teal : .blue) }
                     }
                     Text(highlighted([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "), search))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -549,29 +529,25 @@ struct MenuView: View {
                 }
                 .accessibilityElement(children: .contain)
                 Spacer(minLength: 4)
-                if s.agent == .claude {
-                    ZStack(alignment: .trailing) {
-                        HStack(spacing: 4) {
-                            if let c = model.context[s.sessionId] { ContextBar(reading: c) }
-                            Image(systemName: "ellipsis").foregroundStyle(.tertiary).frame(width: 20, height: 24)
-                        }
-                        .opacity(showButtons ? 0 : 1)
-                        .accessibilityHidden(showButtons)
-                        HStack(spacing: 2) {
-                            if model.live.count == 1, let c = model.context[s.sessionId] { ContextBar(reading: c).padding(.trailing, 4) }
-                            rowButtons(s)
-                        }
-                            .opacity(busy ? 0.3 : showButtons ? 1 : 0)
-                            .disabled(busy)
-                            .allowsHitTesting(showButtons)
-                            .accessibilityHidden(!showButtons)
-                            .overlay { if busy { ProgressView().controlSize(.small).transition(.opacity) } }
+                ZStack(alignment: .trailing) {
+                    HStack(spacing: 4) {
+                        if let c = model.context[s.sessionId] { ContextBar(reading: c) }
+                        Image(systemName: "ellipsis").foregroundStyle(.tertiary).frame(width: 20, height: 24)
                     }
-                    .animation(Motion.fast(reduceMotion), value: showButtons)
-                    .animation(Motion.fast(reduceMotion), value: busy)
-                } else if busy {
-                    ProgressView().controlSize(.small)
+                    .opacity(showButtons ? 0 : 1)
+                    .accessibilityHidden(showButtons)
+                    HStack(spacing: 2) {
+                        if model.live.count == 1, let c = model.context[s.sessionId] { ContextBar(reading: c).padding(.trailing, 4) }
+                        rowButtons(s)
+                    }
+                        .opacity(busy ? 0.3 : showButtons ? 1 : 0)
+                        .disabled(busy)
+                        .allowsHitTesting(showButtons)
+                        .accessibilityHidden(!showButtons)
+                        .overlay { if busy { ProgressView().controlSize(.small).transition(.opacity) } }
                 }
+                .animation(Motion.fast(reduceMotion), value: showButtons)
+                .animation(Motion.fast(reduceMotion), value: busy)
             } action: { model.open(s) }
             .onHover { inside in
                 if inside { hoveredRow = s.sessionId } else if hoveredRow == s.sessionId { hoveredRow = nil }
@@ -580,11 +556,11 @@ struct MenuView: View {
             .animation(Motion.snappy(reduceMotion), value: s.state)
             .contextMenu {
                 Button("Rename…") { confirm = .renameLive(s) }
-                    .disabled(s.agent != .claude || s.kind == .background || model.typingBlockers[s.sessionId] != nil)
+                    .disabled(s.kind == .background || model.typingBlockers[s.sessionId] != nil)
                 Button("Compact context…") { askCompact(s) }
-                    .disabled(s.agent != .claude || blocker(s, "compact") != nil)
+                    .disabled(blocker(s, "compact") != nil)
                 Button("Clear context…") { askClear(s) }
-                    .disabled(s.agent != .claude || s.kind == .background || s.state == .busy || model.typingBlockers[s.sessionId] != nil)
+                    .disabled(s.kind == .background || s.state == .busy || model.typingBlockers[s.sessionId] != nil)
                 Button(s.kind == .interactive ? "Show its window" : "Open in iTerm") { model.open(s) }
                 if let url = s.phoneURL { Button("Copy phone link") { copy(url.absoluteString) } }
                 Button("Copy session ID") { copy(s.sessionId) }
@@ -618,7 +594,7 @@ struct MenuView: View {
     }
 
     private func rowKey(_ key: String, command: Bool = false) -> KeyPress.Result {
-        guard case .live(let sid) = cursor, let s = model.live.first(where: { $0.sessionId == sid }), s.agent == .claude,
+        guard case .live(let sid) = cursor, let s = model.live.first(where: { $0.sessionId == sid }),
               !model.working.contains(sid) else { return .ignored }
         let unavailable = { (why: String) in model.banner = Banner(text: why, isError: true) }
         switch key {
@@ -718,7 +694,7 @@ struct MenuView: View {
                                     : s.isOnPhone ? "Stop it? It also leaves your phone." : "Stop this session?",
                            confirmTitle: s.isLeftover ? "Clear" : "Stop", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
             case .stopIdle:
-                let idle = model.live.filter { $0.state == .idle && !$0.isLeftover && $0.agent == .claude }
+                let idle = model.live.filter { $0.state == .idle && !$0.isLeftover }
                 ConfirmRow(message: "Stop \(Fmt.count(idle.count, "idle session"))? Each can be resumed from Recent.",
                            confirmTitle: "Stop all", destructive: true, cancel: { confirm = nil }) { confirm = nil; idle.forEach(model.stop) }
             case .compact(let s):
@@ -816,8 +792,7 @@ struct MenuView: View {
             return list
         case .live(let sid):
             guard let s = model.live.first(where: { $0.sessionId == sid }) else { return [] }
-            let open = DeckAction(title: s.kind == .interactive || s.agent != .claude ? "Show its window" : "Open in iTerm", key: "⏎") { model.open(s) }
-            guard s.agent == .claude else { return [open, DeckAction(title: "Copy session ID") { copy(s.sessionId) }] }
+            let open = DeckAction(title: s.kind == .interactive ? "Show its window" : "Open in iTerm", key: "⏎") { model.open(s) }
             let working = model.working.contains(sid) ? "Busy with the last action. Try again in a moment." : nil
             let typing = model.typingBlockers[sid]
             var list = [open]

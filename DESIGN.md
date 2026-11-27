@@ -6,8 +6,6 @@ colors:
   waiting: "#FF9500"
   working: "#34C759"
   risky: "#FF3B30"
-  codex: "#30B0C7"
-  gemini: "#007AFF"
   session-blue: "#007AFF"
   session-teal: "#30B0C7"
   session-purple: "#AF52DE"
