@@ -43,7 +43,10 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
         switch kind {
         case .permission:
             detail = summary(tool: tool, input: input)
-            if shellTools.contains(tool) { risk = Risk.of(command: detail) }
+            if shellTools.contains(tool) {
+                // An argument list's last item is usually the shell's -c script: check it on its own too.
+                risk = Risk.of(command: detail) ?? (input["command"] as? [String])?.last.flatMap(Risk.of(command:))
+            }
         case .plan: detail = input["plan"] as? String ?? ""
         case .question: detail = ""
         }
@@ -112,8 +115,10 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
 
 /// A heuristic: a command it doesn't flag isn't proven safe.
 public enum Risk {
-    // Matches only where a command starts, so `git rm -r` or "sudo" in a commit message don't count.
-    private static let start = #"(^|[;&|(\n]\s*|\b(sudo|xargs|then|do|exec)\s+)"#
+    // Matches only where a command starts, so `git rm -r` or `echo "rm -rf x"` don't count. A shell's
+    // `-c` script starts one, quoted or not: `sh -c "rm -rf x"`, and Codex's argument lists, which
+    // arrive joined with spaces (`bash -lc rm -rf ~`). So do backticks and `$(`.
+    private static let start = #"(^|[;&|(\n`]\s*|\b(sudo|xargs|then|do|exec|env|nohup|command|time)\s+|\s-[a-z]*c\s+["']?)"#
     private static let rmRecursive = start + #"(\S*/)?rm\s+(-{1,2}[a-zA-Z-]+\s+)*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b"#
 
     private static let rules: [(pattern: String, reason: String)] = [
@@ -124,7 +129,7 @@ public enum Risk {
         (#"\bgit\s+clean\s+[^;&|]*-[a-zA-Z]*f"#, "deletes untracked files"),
         (#"\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)"#, "throws away local changes"),
         (#"\bgit\s+branch\s+[^;&|]*-D\b"#, "deletes a branch"),
-        (#"(^|[;&|(\n]\s*)sudo\s"#, "runs as administrator"),
+        (start + #"sudo\s"#, "runs as administrator"),
         (#"\b(curl|wget)\b[^;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b"#, "runs a downloaded script"),
         (#"\b(mkfs|diskutil\s+(erase|partition)|dd\s+[^;&|]*of=/dev/)"#, "writes to a disk"),
         (#"\bchmod\s+(-R\s+)?[0-7]*777\b"#, "makes files writable by everyone"),

@@ -22,8 +22,10 @@ HOME = os.path.expanduser("~")
 DATA = os.path.join(HOME, ".claude", "agent-deck")
 SOCKET = os.path.join(DATA, "approvals.sock")
 HOOK = os.path.join(DATA, "hook.py")
-# Must stay under the hook timeout (600) written below.
+# Must stay under the hook timeouts written below (600 and 70).
 WAIT = 590
+# A PreToolUse hook holds back Claude Code's own question or plan dialog while it waits, so keep it short.
+QUESTION_WAIT = 60
 
 CLAUDE_SETTINGS = os.path.join(HOME, ".claude", "settings.json")
 CODEX_HOOKS = os.path.join(HOME, ".codex", "hooks.json")
@@ -33,12 +35,12 @@ GEMINI_EVENTS = {"SessionStart": "SessionStart", "SessionEnd": "SessionEnd", "Be
                  "AfterAgent": "Stop", "BeforeTool": "PreToolUse", "AfterTool": "PostToolUse", "Notification": "Notification"}
 
 
-def send(message, wait):
+def send(message, wait=0):
     try:
         if os.stat(SOCKET).st_uid != os.getuid():
             return None
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(WAIT if wait else 1)
+        s.settimeout(wait or 1)
         s.connect(SOCKET)
         # One line. While waiting our side stays open: Agent Deck takes end-of-file to mean we've gone away.
         s.sendall(json.dumps(message).encode() + b"\n")
@@ -59,7 +61,8 @@ def send(message, wait):
 
 
 def ask(kind, agent, payload):
-    return send({"kind": kind, "agent": agent, "pid": os.getppid(), "payload": payload}, wait=True)
+    return send({"kind": kind, "agent": agent, "pid": os.getppid(), "payload": payload},
+                wait=WAIT if kind == "permission" else QUESTION_WAIT)
 
 
 def out(event, body):
@@ -121,7 +124,7 @@ def event(name, agent, payload):
             return
     keep = ("session_id", "cwd", "tool_name", "tool_input", "agent_id")
     send({"kind": "event", "agent": agent, "event": name, "pid": os.getppid(),
-          "payload": {k: payload[k] for k in keep if k in payload}}, wait=False)
+          "payload": {k: payload[k] for k in keep if k in payload}})
 
 
 def load(path):
@@ -146,7 +149,8 @@ def save(path, data):
 
 
 def ours(handler):
-    return isinstance(handler, dict) and "agent-deck/" in str(handler.get("command", ""))
+    # By the script's path, so every older form of our command is found and replaced too.
+    return isinstance(handler, dict) and "agent-deck/hook.py" in str(handler.get("command", ""))
 
 
 def without_ours(hooks):
@@ -166,7 +170,9 @@ def without_ours(hooks):
 
 
 def cmd(*args):
-    return '/usr/bin/python3 "%s" %s' % (HOOK, " ".join(args))
+    # If the script is gone, do nothing: python3 exits 2 on a missing file, which agents read as "block".
+    # Decisions travel as JSON on stdout with exit 0, so passing python's own status through is safe.
+    return '[ ! -f "%s" ] || /usr/bin/python3 "%s" %s' % (HOOK, HOOK, " ".join(args))
 
 
 def claude_hooks():
@@ -180,7 +186,7 @@ def claude_hooks():
                 for e in ("PostToolUse", "SubagentStart", "SubagentStop", "Stop")}
     return dict(activity,
                 PermissionRequest=[group(cmd("permission"))],
-                PreToolUse=[group(cmd("question"), matcher="AskUserQuestion|ExitPlanMode"),
+                PreToolUse=[group(cmd("question"), matcher="AskUserQuestion|ExitPlanMode", timeout=QUESTION_WAIT + 10),
                             group(cmd("event", "PreToolUse"), timeout=10, run_async=True)])
 
 
@@ -245,9 +251,14 @@ def install():
 
 
 def uninstall():
+    ok = True
     for path in (CLAUDE_SETTINGS, CODEX_HOOKS, GEMINI_SETTINGS):
         data = load(path)
-        if not data or "hooks" not in data:
+        if data is None:
+            print("  %s isn't valid JSON; fix it and run uninstall again" % path)
+            ok = False
+            continue
+        if "hooks" not in data:
             continue
         hooks = without_ours(data["hooks"])
         if hooks == data["hooks"]:
@@ -260,6 +271,7 @@ def uninstall():
             save(path, data)
         else:
             os.remove(path)
+    return ok
 
 
 def check():
@@ -287,9 +299,11 @@ def main():
         agent = args[i + 1] if i + 1 < len(args) else agent
         del args[i:i + 2]
     kind = args[0] if args else ""
-    if kind in ("install", "uninstall", "check"):
-        {"install": install, "uninstall": uninstall, "check": check}[kind]()
+    if kind in ("install", "check"):
+        {"install": install, "check": check}[kind]()
         return
+    if kind == "uninstall":
+        sys.exit(0 if uninstall() else 1)
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except Exception:

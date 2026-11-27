@@ -537,6 +537,7 @@ struct Inspector<Actions: View>: View {
     @ViewBuilder let actions: Actions
     @AppStorage("inspectorPage") private var page = "info"
     @State private var detail: SessionDetail?
+    @State private var detailFor: String?
     @State private var reader: Conversation.Reader?
     @State private var scrolledFor: String?
 
@@ -562,10 +563,13 @@ struct Inspector<Actions: View>: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .task(id: row.id) {
-                detail = nil
+            // Keyed on activity too, so a running session's last reply stays current.
+            .task(id: "\(row.id)-\(row.bytes)-\(row.lastActive.timeIntervalSince1970)-\(String(describing: row.live?.state))") {
+                if detailFor != row.id { detail = nil }
+                detailFor = row.id
                 guard let url = row.saved?.fileURL else { return }
-                detail = await Task.detached { SessionDetail.load(url) }.value
+                let next = await Task.detached { SessionDetail.load(url) }.value
+                if !Task.isCancelled { detail = next }
             }
             // Keyed on size too, so a running session's conversation picks up new lines as its transcript grows.
             .task(id: "\(row.id)-\(row.bytes)-\(page)") {
@@ -751,9 +755,10 @@ struct UsageTab: View {
                                 Ring(percent: w.percent(), size: 84, line: 9, delay: Double(i) * 0.08)
                                 Text(w.label).font(.body.weight(.semibold))
                                 Text(Fmt.resets(w.resetsAt)).font(.subheadline).foregroundStyle(.secondary)
-                                if let f = Fmt.forecast(model.forecast(w)) {
+                                let forecast = model.forecast(w)
+                                if let f = Fmt.forecast(forecast) {
                                     Text(f).font(.subheadline.weight(.medium)).multilineTextAlignment(.center)
-                                        .foregroundStyle(model.forecast(w) == .safeUntilReset ? Color.secondary : Color.orange)
+                                        .foregroundStyle(forecast == .safeUntilReset ? Color.secondary : Color.orange)
                                 }
                             }
                             .frame(width: 140)
@@ -764,9 +769,22 @@ struct UsageTab: View {
 
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
+                            Text("Shared account").font(.body.weight(.semibold))
+                            InfoButton(text: "Everyone signed in to the same Claude account shares these limits. Claude Code's status line carries the account's numbers; when nobody uses Claude on this Mac, Agent Deck reads them from Anthropic every ten minutes instead, so it still warns you. A rise with no reply written on this Mac counts as another Mac's.")
+                            Spacer()
+                            Text(model.usageIsAccount ? "Read from Anthropic" : "From Claude Code on this Mac").foregroundStyle(.secondary)
+                        }
+                        if model.lastHour.total >= 1 { LastHourBar(model: model) }
+                        else { Text("Nobody on this login used it in the last hour.").foregroundStyle(.secondary) }
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
                             Text(chartKey == "five_hour" ? "5-hour limit, last 24 hours" : "Weekly limit, last 7 days")
                                 .font(.body.weight(.semibold))
-                            InfoButton(text: "The same numbers /usage shows. They refresh whenever any Claude Code session is active. The dashed orange line is the pace forecast: it compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
+                            InfoButton(text: "The same numbers /usage shows. They refresh every few minutes from your account, and with every Claude Code reply on this Mac. The dashed orange line is the pace forecast: it compares your usage over the last hour (5-hour limit) or day (weekly) and appears once there are 10 minutes of readings.")
                             Spacer()
                             Picker("", selection: $chartKey) {
                                 Text("5-hour").tag("five_hour")
@@ -790,7 +808,7 @@ struct UsageTab: View {
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     ContentUnavailableView("No usage numbers yet", systemImage: "chart.xyaxis.line",
-                                           description: Text("Send a message in any Claude Code session and they'll appear here. If they still don't, re-run the installer so the status line hook is set up."))
+                                           description: Text("They appear within a few minutes once this Mac is signed in to Claude Code, or after your next Claude Code message."))
                 }
             }
             .padding(20)
@@ -915,10 +933,8 @@ struct UsageChart: View {
                     .frame(height: 220)
             } else {
                 Chart {
-                    RuleMark(y: .value("Alert", 95)).foregroundStyle(.red.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .annotation(position: .top, alignment: .leading) { Text("95%").font(.subheadline).foregroundStyle(.secondary) }
-                    RuleMark(y: .value("Alert", 80)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .annotation(position: .top, alignment: .leading) { Text("80%").font(.subheadline).foregroundStyle(.secondary) }
+                    RuleMark(y: .value("Alert", Notifier.warnAt)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .annotation(position: .top, alignment: .leading) { Text("Warn at \(Int(Notifier.warnAt))%").font(.subheadline).foregroundStyle(.secondary) }
                     ForEach(resets, id: \.self) { r in
                         RuleMark(x: .value("Reset", r)).foregroundStyle(.secondary.opacity(0.3))
                             .annotation(position: .top) { Text("reset").font(.subheadline).foregroundStyle(.secondary) }
@@ -1014,7 +1030,7 @@ struct UsageHeatmapView: View {
                                 RoundedRectangle(cornerRadius: 2)
                                     .fill(v > 0 ? Color.accentColor.opacity(0.15 + 0.85 * v / m.peak) : Color.secondary.opacity(0.08))
                                     .frame(height: 14)
-                                    .help(v > 0 ? "\(m.weekdaySymbols[d]) \(h):00 · +\(Int(v.rounded())) points" : "")
+                                    .help(v > 0 ? "\(m.weekdaySymbols[d]) \(Fmt.hour(h)) · +\(Int(v.rounded())) points" : "")
                             }
                         }
                     }

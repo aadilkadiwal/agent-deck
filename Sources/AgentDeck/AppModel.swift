@@ -2,6 +2,7 @@ import AppKit
 import ServiceManagement
 import AgentDeckCore
 import SwiftUI
+import UserNotifications
 
 struct Activity: Equatable {
     var tool: String?
@@ -26,6 +27,8 @@ final class AppModel {
     private(set) var history: [HistorySession] = []
     private(set) var usage: UsageSnapshot?
     private(set) var samples: [UsageSample] = []
+    private(set) var forecasts: [String: Forecast] = [:]
+    private(set) var recentFolders: [String] = []
     private(set) var working: Set<String> = []
     private(set) var typingBlockers: [String: String] = [:]
     var banner: Banner?
@@ -37,15 +40,19 @@ final class AppModel {
     private(set) var outcomes: [Int: ApprovalAnswer] = [:]
     private(set) var activity: [String: Activity] = [:]
     private(set) var busySince: [String: Date] = [:]
+    private(set) var recentUse = RecentUse()
+    private(set) var continueQueue = Set<String>()
     private(set) var branches: [String: String] = [:]
     private(set) var context: [String: ContextReading] = [:]
     private(set) var codexUsage: [CodexUsage.Limit] = []
+    private(set) var accountStatus: AccountUsage.Result?
     /// `hook.py check`: "ok" / "missing" / "absent" per agent, plus hookScript and statusLine.
     private(set) var health: [String: Any]?
+    private(set) var notificationsOff = false
     var menuOpen = false {
         didSet {
             guard menuOpen else { return }
-            Task { await refresh(history: true, agents: true) }
+            Task { await refresh(history: true, agents: true); await checkNotifications() }
             // A broken hook silently turns approvals off, so the dropdown checks too (not on every open).
             if Date().timeIntervalSince(lastHealthCheck) > 600 { Task { await checkHealth() } }
         }
@@ -73,7 +80,19 @@ final class AppModel {
     /// Sessions whose plan was approved with "auto-accept edits": applied at their next edit prompt.
     private var autoAcceptEdits = Set<String>()
     private var lastCodexUsage = Date.distantPast
+    private var lastAccountFetch = Date.distantPast
+    private var accountBackoff: TimeInterval = 0
+    private var lastAccount = ClaudeAccount.current()
+    private var historyLoaded = false
+    private var lastLoginCheck = Date.distantPast
+    private var lastRecentUse = Date.distantPast
     private var lastHealthCheck = Date.distantPast
+    private var lastForecast = Date.distantPast
+    private var refreshRunning = false
+    private var usageRunning = false
+    private var rerun: (history: Bool, agents: Bool)?
+    private var watchTask: Task<Void, Never>?
+    private var watchSessions = false
     private let hotkeys = Hotkeys()
 
     init() {
@@ -83,6 +102,7 @@ final class AppModel {
         cli = ClaudeCLI.locate().map { ClaudeCLI(executable: $0, paths: paths) }
         retentionDays = ClaudeSettings.retentionDays(paths)
         samples = usageLog.load()
+        Task { await checkNotifications() }
         if cli == nil {
             banner = Banner(text: "Couldn't find the claude command. Install Claude Code, then reopen Agent Deck.", isError: true)
         }
@@ -93,6 +113,7 @@ final class AppModel {
         }
         notifier.onOpen = { [weak self] id in self?.openSession(id: id) }
         notifier.onAnswer = { [weak self] id, answer in self?.answerFromNotification(id, answer) }
+        notifier.onSwitch = { [weak self] in self?.switchToSonnet() }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
         hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
         hotkeys.onMenu = { StatusMenu.toggle() }
@@ -105,6 +126,7 @@ final class AppModel {
         // so "waiting for you" shows within seconds. `claude agents` runs only when due, see refresh().
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
+            Task { @MainActor in await self?.refreshUsage() }
         }
         Task { await refresh(history: true, agents: true) }
     }
@@ -114,10 +136,25 @@ final class AppModel {
     var needsYou: Bool { live.contains { $0.state == .blocked && !$0.isLeftover } }
     func count(_ state: LiveSession.State) -> Int { live.filter { $0.state == state && !$0.isLeftover }.count }
 
+    private(set) var usageIsAccount = false
+
+    var accountStatusText: String {
+        switch accountStatus {
+        case nil: return usage == nil ? "checking…" : "not needed while Claude Code runs here: its status line has the account's numbers"
+        case .ok(let u)?: return usageIsAccount ? "updated \(Fmt.ago(u.updatedAt)) · includes everyone on this login"
+            : "not needed while Claude Code runs here: its status line has the account's numbers"
+        case .signedOut?: return "not signed in to Claude Code"
+        case .expired?: return "login expired · open Claude Code once"
+        case .rateLimited?: return "Anthropic asked to slow down · trying again in \(Int(accountBackoff / 60)) min, using this Mac's status line meanwhile"
+        case .failed?: return "couldn't reach Anthropic · using this Mac's status line"
+        }
+    }
+
     var barSummary: String {
         var parts: [String] = []
         if let w = usage?.fiveHour { parts.append("5-hour limit \(Int(w.percent().rounded()))%") }
         if let w = usage?.weekly { parts.append("weekly \(Int(w.percent().rounded()))%") }
+        if let at = runsOut { parts.append("runs out at \(Fmt.clock(at)) at this pace") }
         parts.append("\(Fmt.count(live.count, "session")) running")
         let waiting = count(.blocked)
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
@@ -130,22 +167,124 @@ final class AppModel {
         return dupes
     }
 
-    func forecast(_ w: LimitWindow) -> Forecast { Forecast.compute(w, samples: samples) }
+    func forecast(_ w: LimitWindow) -> Forecast { forecasts[w.key] ?? .unknown }
+
+    var lastHour: SharedUse.Split {
+        SharedUse.split(samples, key: "five_hour", since: Date().addingTimeInterval(-3600), activeMinutes: recentUse.activeMinutes)
+    }
+
+    var usageNote: String? {
+        let h = lastHour
+        guard h.others >= 1 else { return nil }
+        if h.mine == 0 { return "All of the last hour's use came from another Mac on this login" }
+        return "\(h.others >= h.mine ? "Most" : "Some") of the last hour's use came from another Mac on this login"
+    }
+
+    // The one that resets last is when work can go on. It counts as used up for a minute past its
+    // reset, so "continue" doesn't race the server's clock.
+    var limitHit: LimitWindow? {
+        usage?.windows.filter { $0.percent(at: Date().addingTimeInterval(-60)) >= LimitWindow.full }.max { ($0.resetsAt ?? .distantFuture) < ($1.resetsAt ?? .distantFuture) }
+    }
+
+    func isStoppedAtLimit(_ s: LiveSession) -> Bool {
+        s.agent == .claude && s.state == .idle && recentUse.stoppedAtLimit.contains(s.sessionId)
+    }
+
+    func toggleContinue(_ s: LiveSession) {
+        if continueQueue.remove(s.sessionId) == nil {
+            continueQueue.insert(s.sessionId)
+            if limitHit == nil { Task { await continueQueued() } }
+        }
+    }
+
+    func recheckLimits() {
+        guard let u = usage else { return }
+        notifier.usageChanged(u, forecast: forecast, note: usageNote, canSwitch: switchCandidates.count)
+    }
+
+    var switchCandidates: [LiveSession] {
+        live.filter { s in
+            s.agent == .claude && s.state == .idle && typingBlockers[s.sessionId] == nil && s.kind == .interactive
+                && (history.first { $0.sessionId == s.sessionId }?.model.map { $0.contains("opus") || $0.contains("fable") } ?? false)
+        }
+    }
+
+    func switchToSonnet() {
+        let targets = switchCandidates
+        guard let cli, !targets.isEmpty else { return }
+        Task {
+            let withFiles = targets.compactMap { s in history.first { $0.sessionId == s.sessionId }.map { (s, transcript: $0.fileURL) } }
+            let errors = await cli.switchModel(withFiles, to: "sonnet")
+            await refreshHistory()   // so the switched sessions stop counting as Opus before their next reply
+            let done = targets.count - errors.count
+            if let (s, e) = errors.first {
+                let why = e.localizedDescription.replacingOccurrences(of: s.name, with: displayName(s))
+                let which = errors.count > 1 ? " Couldn't type into \(errors.map { displayName($0.0) }.joined(separator: ", "))." : ""
+                banner = Banner(text: "Switched \(done) of \(targets.count).\(which) \(why)", isError: true)
+            } else {
+                banner = Banner(text: "Switched \(Fmt.count(done, "session")) to Sonnet.")
+            }
+        }
+    }
+
+    private func refreshRecentUse() async {
+        lastRecentUse = Date()
+        let files = Dictionary(live.compactMap { s in history.first { $0.sessionId == s.sessionId }.map { (s.sessionId, $0.fileURL) } },
+                               uniquingKeysWith: { a, _ in a })
+        let since = Date().addingTimeInterval(-3600)
+        let r = await Task.detached { RecentUse.load(files, since: since) }.value
+        if r != recentUse { recentUse = r }
+        let queue = continueQueue.filter { id in live.contains { $0.sessionId == id } && r.stoppedAtLimit.contains(id) }
+        if queue != continueQueue { continueQueue = queue }
+    }
+
+    private func continueQueued() async {
+        guard let cli, limitHit == nil, !continueQueue.isEmpty else { return }
+        let targets = live.filter { continueQueue.contains($0.sessionId) }
+        continueQueue = []
+        var done: [String] = [], failed: [String] = []
+        for s in targets {
+            do { try await cli.send("continue", to: s); done.append(displayName(s)) } catch { failed.append(displayName(s)) }
+        }
+        notifier.continued(done: done, failed: failed)
+        lastRecentUse = .distantPast
+    }
+
+    var runsOut: Date? {
+        ["five_hour", "seven_day"].compactMap { if case .reachesLimit(let at) = forecasts[$0], at > Date() { at } else { nil } }.min()
+    }
 
     func lastPrompt(_ sessionId: String) -> String {
         history.first { $0.sessionId == sessionId }?.lastPrompt ?? ""
     }
 
-    var recentFolders: [String] {
-        var seen = Set<String>()
-        return (live.map(\.cwd) + history.map(\.cwd))
-            .filter { FileManager.default.fileExists(atPath: $0) && seen.insert($0).inserted }
-            .prefix(8).map { $0 }
+    private func updateRecentFolders() {
+        var seen = Set<String>(), folders: [String] = []
+        for cwd in live.map(\.cwd) + history.map(\.cwd) where folders.count < 8 {
+            if seen.insert(cwd).inserted && FileManager.default.fileExists(atPath: cwd) { folders.append(cwd) }
+        }
+        if folders != recentFolders { recentFolders = folders }
     }
 
     /// Session files and usage every call. `claude agents` (which starts a process) every 5 s while
     /// a window is open, otherwise once a minute or when a session starts/stops. History once a minute.
+    /// Timer, watchers and hook events all call this; a call during a run folds into one rerun after it.
     func refresh(history forceHistory: Bool = false, agents forceAgents: Bool = false) async {
+        if refreshRunning {
+            rerun = ((rerun?.history ?? false) || forceHistory, (rerun?.agents ?? false) || forceAgents)
+            return
+        }
+        refreshRunning = true
+        defer { refreshRunning = false }
+        var next: (history: Bool, agents: Bool)? = (forceHistory, forceAgents)
+        while let (h, a) = next {
+            await refreshOnce(history: h, agents: a)
+            next = rerun
+            rerun = nil
+        }
+    }
+
+    private func refreshOnce(history forceHistory: Bool, agents forceAgents: Bool) async {
         let agentsEvery: TimeInterval = (menuOpen || detailsOpen || pinnedOpen) ? 5 : 60
         if let cli, forceAgents || Date().timeIntervalSince(lastAgentsFetch) >= agentsEvery {
             lastAgentsFetch = Date()
@@ -163,9 +302,15 @@ final class AppModel {
             let now = Date()
             busySince = Dictionary(uniqueKeysWithValues: next.filter { $0.state == .busy }.map { ($0.sessionId, busySince[$0.sessionId] ?? now) })
             live = next
-            typingBlockers = Dictionary(uniqueKeysWithValues: next.filter { $0.agent == .claude }.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } })
-            branches = Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a })
             activity = activity.filter { id, _ in next.contains { $0.sessionId == id } }
+            updateRecentFolders()
+            let (blockers, br) = await Task.detached {
+                (Dictionary(next.filter { $0.agent == .claude }.compactMap { s in ClaudeCLI.typingBlocker(s).map { (s.sessionId, $0) } },
+                            uniquingKeysWith: { a, _ in a }),
+                 Dictionary(next.compactMap { s in Git.branch(s.cwd).map { (s.cwd, $0) } }, uniquingKeysWith: { a, _ in a }))
+            }.value
+            if blockers != typingBlockers { typingBlockers = blockers }
+            if br != branches { branches = br }
         }
         let ctx = Dictionary(uniqueKeysWithValues: live.filter { $0.agent == .claude }.compactMap { s in
             ContextUsage.load(paths, sessionId: s.sessionId).map { (s.sessionId, $0) } })
@@ -176,15 +321,64 @@ final class AppModel {
             if u != codexUsage { codexUsage = u }
         }
         dropAnsweredElsewhere()
-        let u = UsageSnapshot.load(paths)
-        if u != usage {
-            usage = u
-            if let u {
-                samples = usageLog.record(u, existing: samples)
-                notifier.usageChanged(u, forecast: forecast)
-            }
-        }
+        await refreshUsage()
         if forceHistory || Date().timeIntervalSince(lastHistoryScan) > 60 { await refreshHistory() }
+        if Date().timeIntervalSince(lastRecentUse) > (live.contains { $0.state == .busy } ? 20 : 60) { await refreshRecentUse() }
+    }
+
+    /// Limit warnings must not wait behind session work (a slow `claude agents`, a folder-access prompt),
+    /// so the timer also runs this on its own.
+    private func refreshUsage() async {
+        guard !usageRunning else { return }
+        usageRunning = true
+        defer { usageRunning = false }
+        // Someone else signed in here: their limits are new numbers, not stale ones.
+        let account = ClaudeAccount.current()
+        if account != lastAccount {
+            lastAccount = account
+            usage = nil
+            accountStatus = nil
+            lastAccountFetch = .distantPast
+        }
+        // The status line carries the whole account's numbers too, so only a Mac where it has gone quiet
+        // (nobody using Claude here) asks Anthropic. Keeps a shared login well under the endpoint's rate limit.
+        let local = UsageSnapshot.load(paths)
+        let localFresh = local.map { Date().timeIntervalSince($0.updatedAt) < 300 } ?? false
+        if !localFresh, Date().timeIntervalSince(lastAccountFetch) >= max(600, accountBackoff) {
+            lastAccountFetch = Date()
+            var r = await AccountUsage.fetch()
+            // ponytail: the endpoint allows about one request per 10 minutes per login (measured); Claude Code's
+            // own /usage shares it, so ask at most that often and back off further after a 429.
+            accountBackoff = r == .rateLimited ? min(max(accountBackoff * 2, 1200), 1800) : 0
+            // Claude Code renews its own login; asking it for the auth status lets it do that while nobody uses it here.
+            if r == .expired, let cli, Date().timeIntervalSince(lastLoginCheck) > 600 {
+                lastLoginCheck = Date()
+                _ = try? await cli.run(["auth", "status"], timeout: 20)
+                r = await AccountUsage.fetch()
+            }
+            if r != accountStatus { accountStatus = r }
+        }
+        // Both cover every Mac on the login; the newer reading wins.
+        var u = local
+        var fromAccount = false
+        if case .ok(let a) = accountStatus, a.updatedAt > (local?.updatedAt ?? .distantPast) { u = a; fromAccount = true }
+        if fromAccount != usageIsAccount { usageIsAccount = fromAccount }
+        u = u?.keepingNewest(usage)
+        let usageChanged = u != usage
+        if usageChanged {
+            usage = u
+            if let u { samples = usageLog.record(u, existing: samples) }
+        }
+        if usageChanged || Date().timeIntervalSince(lastForecast) >= 60 {
+            lastForecast = Date()
+            let f = Dictionary(uniqueKeysWithValues: (u?.windows ?? []).map { ($0.key, Forecast.compute($0, samples: samples)) })
+            if f != forecasts { forecasts = f }
+        }
+        // Alerts wait for the first history scan: offering the switch needs each session's model.
+        if usageChanged, historyLoaded, let u {
+            notifier.usageChanged(u, forecast: forecast, note: usageNote, canSwitch: switchCandidates.count)
+        }
+        if !continueQueue.isEmpty, limitHit == nil { await continueQueued() }
     }
 
     func refreshNow() async {
@@ -197,7 +391,14 @@ final class AppModel {
         lastHistoryScan = Date()
         let scanner = self.scanner
         let h = await Task.detached { scanner.scan() }.value
-        if h != history { history = h }
+        if h != history {
+            history = h
+            updateRecentFolders()
+        }
+        if !historyLoaded {
+            historyLoaded = true
+            recheckLimits()
+        }
         if UserDefaults.standard.bool(forKey: "autoCleanLeftovers"), Date().timeIntervalSince(lastAutoClean) > 86400 {
             lastAutoClean = Date()
             await cleanLeftovers(quiet: true)
@@ -210,12 +411,23 @@ final class AppModel {
         guard fd >= 0 else { return }
         let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
         src.setEventHandler { [weak self] in
-            let sessions = dir == self?.paths.sessionsDir
-            Task { @MainActor in await self?.refresh(history: sessions, agents: sessions) }
+            MainActor.assumeIsolated { self?.watchFired(sessions: dir == self?.paths.sessionsDir) }
         }
         src.setCancelHandler { Darwin.close(fd) }
         src.resume()
         watchers.append(src)
+    }
+
+    /// A burst of file events (one write per session file) becomes one refresh 0.5 s after the first.
+    private func watchFired(sessions: Bool) {
+        watchSessions = watchSessions || sessions
+        guard watchTask == nil else { return }
+        watchTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            let sessions = watchSessions
+            (watchSessions, watchTask) = (false, nil)
+            await refresh(history: sessions, agents: sessions)
+        }
     }
 
     func openSession(id: String) {
@@ -315,9 +527,11 @@ final class AppModel {
     func resumeInTerminal(_ h: HistorySession) { openTerminal(ClaudeCLI.ShellLine.resume(h.sessionId, cwd: h.cwd)) }
 
     func open(_ s: LiveSession) {
-        if s.kind == .interactive, let pid = s.pid, ClaudeCLI.focusTerminal(pid: pid, cwd: s.cwd) { return }
-        guard s.agent == .claude else { return }
-        openTerminal(ClaudeCLI.ShellLine.attach(s.shortId))
+        Task {
+            if s.kind == .interactive, let pid = s.pid, await ClaudeCLI.focusTerminal(pid: pid, cwd: s.cwd) { return }
+            guard s.agent == .claude else { return }
+            openTerminal(ClaudeCLI.ShellLine.attach(s.shortId))
+        }
     }
 
     func openTerminal(_ line: String) {
@@ -326,13 +540,21 @@ final class AppModel {
 
     /// Only closed sessions; running ones are skipped so a live transcript is never pulled away.
     func delete(_ sessions: [HistorySession], files: [URL] = []) {
-        let ids = liveIds
-        var failed = 0, done = 0, moved: [Leftovers.Moved] = []
-        for s in sessions where !ids.contains(s.sessionId) {
-            do { moved += try HistoryScanner.trash(s, paths: paths); done += 1 } catch { failed += 1 }
+        let ids = liveIds, paths = self.paths
+        Task {
+            let (done, failed, fileFailed, moved) = await Task.detached {
+                var failed = 0, done = 0, moved: [Leftovers.Moved] = []
+                for s in sessions where !ids.contains(s.sessionId) {
+                    do { moved += try HistoryScanner.trash(s, paths: paths); done += 1 } catch { failed += 1 }
+                }
+                let (fileFailed, filesMoved) = Leftovers.moveToTrash(files)
+                return (done, failed, fileFailed, moved + filesMoved)
+            }.value
+            deleted(done: done, failed: failed, files: files, fileFailed: fileFailed, moved: moved)
         }
-        let (fileFailed, filesMoved) = Leftovers.moveToTrash(files)
-        moved += filesMoved
+    }
+
+    private func deleted(done: Int, failed: Int, files: [URL], fileFailed: Int, moved: [Leftovers.Moved]) {
         let filesNote = files.isEmpty ? "" : " and \(Fmt.count(files.count - fileFailed, "file"))"
         banner = failed + fileFailed == 0
             ? Banner(text: "Moved \(Fmt.count(done, "session"))\(filesNote) to the Trash.", actionTitle: moved.isEmpty ? nil : "Undo") { [weak self] in
@@ -343,7 +565,13 @@ final class AppModel {
     }
 
     private func undoDelete(_ moved: [Leftovers.Moved]) {
-        let failed = Leftovers.restore(moved)
+        Task {
+            let failed = await Task.detached { Leftovers.restore(moved) }.value
+            undone(failed)
+        }
+    }
+
+    private func undone(_ failed: Int) {
         banner = failed == 0 ? Banner(text: "Restored from the Trash.")
                              : Banner(text: "\(Fmt.count(failed, "item")) couldn't be restored. They're still in the Trash.", isError: true)
         Task { await refreshHistory(); if storage != nil { await refreshStorage() } }
@@ -365,11 +593,11 @@ final class AppModel {
 
     func cleanLeftovers(quiet: Bool = false) async {
         let paths = self.paths, keep = liveIds
-        let (orphans, bytes) = await Task.detached {
+        let (orphans, bytes, failed) = await Task.detached {
             let o = Leftovers.orphans(paths, keep: keep)
-            return (o, Leftovers.size(o))
+            let bytes = Leftovers.size(o)
+            return (o, bytes, Leftovers.moveToTrash(o).failed)
         }.value
-        let failed = Leftovers.moveToTrash(orphans).failed
         if !quiet || failed > 0 {
             banner = failed == 0 ? Banner(text: "Moved \(Fmt.count(orphans.count, "leftover")) (\(Fmt.bytes(bytes))) to the Trash.")
                 : Banner(text: "\(Fmt.count(failed, "leftover")) couldn't be moved to the Trash.", isError: true)
@@ -541,6 +769,13 @@ final class AppModel {
         lastHealthCheck = Date()
         let out = await Self.python(hookScript, "check")
         health = out.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ["error": true]
+        await checkNotifications()
+    }
+
+    /// Unanswered counts as off too: until someone allows them, macOS drops every alert.
+    func checkNotifications() async {
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        notificationsOff = status == .denied || status == .notDetermined
     }
 
     var missingHooks: Set<String> {
@@ -600,24 +835,39 @@ enum Fmt {
     static func ago(_ d: Date) -> String {
         let now = Date()
         if now.timeIntervalSince(d) < 60 { return "now" }
+        return relative.localizedString(for: d, relativeTo: now)
+    }
+
+    private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
-        return f.localizedString(for: d, relativeTo: now)
+        return f
+    }()
+    // Templates, not fixed formats, so the 24-hour setting is followed.
+    private static let time = formatter("jmm"), dayTime = formatter("EEEjmm")
+    private static func formatter(_ template: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate(template)
+        return f
     }
 
     static func resets(_ d: Date?) -> String {
-        let now = Date()
         guard let d else { return "" }
-        if d <= now { return "reset" }
-        let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDate(d, inSameDayAs: now) ? "h:mm a" : "EEE h:mm a"
-        return "resets " + f.string(from: d)
+        return d <= Date() ? "reset" : "resets " + clock(d)
+    }
+
+    /// `resets(_:)` for the start of a sentence. `.capitalized` would also turn "PM" into "Pm".
+    static func resetsTitle(_ d: Date?) -> String {
+        let s = resets(d)
+        return s.prefix(1).uppercased() + s.dropFirst()
     }
 
     static func clock(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDateInToday(d) ? "h:mm a" : "EEE h:mm a"
-        return f.string(from: d)
+        (Calendar.current.isDateInToday(d) ? time : dayTime).string(from: d)
+    }
+
+    static func hour(_ h: Int) -> String {
+        Calendar.current.date(bySettingHour: h, minute: 0, second: 0, of: Date()).map(time.string) ?? "\(h):00"
     }
 
     static func duration(_ t: TimeInterval) -> String {
@@ -627,8 +877,8 @@ enum Fmt {
 
     static func forecast(_ f: Forecast) -> String? {
         switch f {
-        case .reachesLimit(let at): return at <= Date() ? "Limit reached" : "At this pace: 100% at \(clock(at))"
-        case .safeUntilReset: return "Safe until reset at this pace"
+        case .reachesLimit(let at): return at <= Date() ? "Limit reached" : "\(clock(at)) · runs out"
+        case .safeUntilReset: return "Lasts until reset"
         case .unknown: return nil
         }
     }

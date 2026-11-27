@@ -13,10 +13,14 @@ if [ -f "$SETTINGS" ]; then
   python3 - "$SETTINGS" "$DATA_DIR/statusline-tap.sh" "$DATA_DIR/original-statusline" <<'PY'
 import json, os, sys
 settings, tap, orig_file = sys.argv[1:4]
-with open(settings) as f:
-    data = json.load(f)
-line = data.get("statusLine") or {}
-if line.get("command") == tap:
+try:
+    with open(settings) as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"! ~/.claude/settings.json isn't valid JSON ({e}); status line left as it is")
+    sys.exit(0)
+line = data.get("statusLine") if isinstance(data, dict) else None
+if isinstance(line, dict) and line.get("command") == tap:
     orig = open(orig_file).read().strip() if os.path.exists(orig_file) else ""
     if orig:
         data["statusLine"] = {**line, "command": orig}
@@ -30,6 +34,16 @@ if line.get("command") == tap:
 PY
 fi
 
-[ -f "$DATA_DIR/hook.py" ] && python3 "$DATA_DIR/hook.py" uninstall && echo "✓ Hooks removed from Claude Code, Codex and Gemini CLI"
+# The hooks call $DATA_DIR/hook.py, so keep that folder unless they're really gone.
+if [ -f "$DATA_DIR/hook.py" ]; then
+  if ! python3 "$DATA_DIR/hook.py" uninstall; then
+    echo "✗ Couldn't remove the hooks (see above). Kept $DATA_DIR; fix the file and run this again." >&2
+    exit 1
+  fi
+  echo "✓ Hooks removed from Claude Code, Codex and Gemini CLI"
+elif grep -qs 'agent-deck/hook.py' "$SETTINGS" "$HOME/.codex/hooks.json" "$HOME/.gemini/settings.json"; then
+  echo "✗ Agent Deck hooks are still in your settings, but $DATA_DIR/hook.py is missing. Run install.sh, then this again." >&2
+  exit 1
+fi
 rm -rf "$DATA_DIR"
 echo "✓ Agent Deck data removed (your Claude Code sessions are untouched)"

@@ -49,6 +49,7 @@ final class PinnedPanel: NSObject, NSWindowDelegate {
 struct PinnedView: View {
     let model: AppModel
     @AppStorage("pinnedSmall") private var small = false
+    @State private var visible = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // Small mode lists every session on one line, waiting ones included; full mode shows their cards instead.
@@ -73,7 +74,7 @@ struct PinnedView: View {
                     }
                     if !model.approvals.isEmpty && !rows.isEmpty { Divider().padding(.vertical, 4) }
                 }
-                ForEach(rows) { PinnedRow(model: model, session: $0, small: small) }
+                ForEach(rows) { PinnedRow(model: model, session: $0, small: small, animated: visible) }
                 if model.live.isEmpty {
                     Text("No sessions running.").font(.callout).foregroundStyle(.secondary).padding(8)
                 }
@@ -83,6 +84,11 @@ struct PinnedView: View {
             .animation(Motion.spring(reduced: reduceMotion), value: small)
         }
         .frame(minWidth: 260, minHeight: 80)
+        // The dots pulse forever, so they stop while the panel is covered, on another display that's asleep, etc.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { n in
+            guard let w = n.object as? NSWindow, w.contentView is NSHostingView<PinnedView> else { return }
+            visible = w.occlusionState.contains(.visible)
+        }
     }
 }
 
@@ -90,6 +96,7 @@ private struct PinnedRow: View {
     let model: AppModel
     let session: LiveSession
     let small: Bool
+    let animated: Bool
 
     var body: some View {
         let s = session
@@ -97,7 +104,7 @@ private struct PinnedRow: View {
         let card = model.pendingApprovals.first { $0.sessionId == s.sessionId }
         HoverRow {
             Capsule().fill(waiting ? Color.orange : SessionColor.of(s.sessionId)).frame(width: 3, height: small ? 14 : 18)
-            StateDot(state: s.isLeftover ? nil : s.state, animated: true)
+            StateDot(state: s.isLeftover ? nil : s.state, animated: animated)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(model.displayName(s)).font(.callout.weight(waiting ? .semibold : .medium)).lineLimit(1)
@@ -114,7 +121,7 @@ private struct PinnedRow: View {
         } action: {
             guard let card else { model.open(s); return }
             model.focusApproval = card.id
-            if !model.menuOpen { StatusMenu.toggle() }
+            StatusMenu.open()
         }
         .background { if waiting { RoundedRectangle(cornerRadius: Radius.row).fill(Color.orange.opacity(0.08)) } }
         .help(card != nil ? "Answer it in the menu" : s.kind == .interactive ? "Show its window" : "Open in iTerm")

@@ -7,6 +7,7 @@ import AgentDeckCore
 final class Updater: ObservableObject {
     @Published private(set) var status = "Checking…"
     @Published private(set) var updatesAvailable = 0
+    @Published private(set) var incoming: [String] = []
     @Published private(set) var busy = false
 
     private var source: String? {
@@ -29,22 +30,38 @@ final class Updater: ObservableObject {
             _ = try? await Self.git(src, "fetch", "--quiet")
             let count = Int((try? await Self.git(src, "rev-list", "--count", "HEAD..@{u}")) ?? "0") ?? 0
             updatesAvailable = count
+            incoming = count == 0 ? [] : ((try? await Self.git(src, "log", "--format=%s", "HEAD..@{u}")) ?? "")
+                .split(separator: "\n").map(String.init)
             status = count == 0 ? "Up to date." : "Update available: \(Fmt.count(count, "new change"))."
         }
     }
 
-    /// The installer quits and reopens the app, so this is the last thing it does.
+    /// The installer quits and reopens the app, so on success this is the last thing it does.
     func update() {
         guard let src = source else { return }
         busy = true
-        status = "Updating… Agent Deck will restart."
         Task {
+            // A pull into a checkout with local edits could fail halfway or build something unexpected.
+            if let dirty = try? await Self.git(src, "status", "--porcelain"), !dirty.isEmpty {
+                status = "Your source folder has uncommitted changes. Commit or stash them, then update."
+                busy = false
+                return
+            }
+            status = "Updating… Agent Deck will restart."
             do {
                 _ = try await Self.git(src, "pull", "--ff-only", "--quiet")
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/bin/bash")
                 p.arguments = [src + "/install.sh"]
                 p.currentDirectoryURL = URL(fileURLWithPath: src)
+                p.terminationHandler = { p in
+                    let code = p.terminationStatus
+                    guard code != 0 else { return }
+                    Task { @MainActor [weak self] in
+                        self?.status = "Update failed: install.sh exited with code \(code). Run it in Terminal to see why."
+                        self?.busy = false
+                    }
+                }
                 try p.run()
             } catch {
                 status = "Update failed: \(error.localizedDescription)"
@@ -58,10 +75,17 @@ final class Updater: ObservableObject {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             p.arguments = ["-C", dir] + args
+            // Never wait on a password or host-key prompt nobody can see.
+            var env = ProcessInfo.processInfo.environment
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
+            p.environment = env
             let out = Pipe()
             p.standardOutput = out
-            p.standardError = Pipe()
+            p.standardError = FileHandle.nullDevice
+            p.standardInput = FileHandle.nullDevice
             try p.run()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) { if p.isRunning { p.terminate() } }
             let data = out.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
             guard p.terminationStatus == 0 else { throw NSError(domain: "git", code: Int(p.terminationStatus)) }

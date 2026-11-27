@@ -125,7 +125,7 @@ System font only (SF Pro, SF Mono), through macOS text styles so text follows th
 
 ## Layout
 
-- Dropdown: 370 pt wide, 8 pt padding, usage rings 48 pt (their percentage label stays at 11 pt or more; smaller rings show the number beside them). Its two scrolling lists (Needs you, Sessions) share the screen height that's left after the fixed parts (about 340 pt), so the footer always stays on screen.
+- Dropdown: a borderless panel flush under the menu bar, 370 pt wide, 8 pt side padding (4 pt at the top), usage rings 48 pt (their percentage label stays at 11 pt or more; smaller rings show the number beside them). Its two scrolling lists (Needs you, Sessions) share the height left on that screen after the measured fixed parts, so the footer always stays on screen.
 - Spacing is on a 4 pt grid: 4 (icon and its label), 8 (between items and inside rows and cards), 12 (window content), 20 (page padding).
 - Details window: sidebar (Sessions, Waiting, Usage, then Projects, 8 shown), table, optional side panel (260 to 460 pt).
 - Settings: a standard Settings window with tabs, resizable from 520 × 420 pt.

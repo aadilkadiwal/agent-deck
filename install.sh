@@ -38,7 +38,9 @@ if command -v claude >/dev/null || [ -x "$HOME/.local/bin/claude" ]; then ok "Cl
 else warn "Claude Code not found on PATH. Agent Deck will tell you if it can't find it."; fi
 
 # Use this checkout if we're inside one, otherwise clone or update a copy under ~/.claude/agent-deck/src.
-here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+# Under `curl | bash` there's no script file, and the current folder may be some stale checkout.
+here=""
+[ -f "${BASH_SOURCE[0]:-}" ] && here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "$here" ] && [ -f "$here/Package.swift" ] && [ -f "$here/scripts/build-app.sh" ]; then
   SRC="$here"
 else
@@ -50,7 +52,7 @@ else
 fi
 
 step "Building (first build takes about a minute)"
-APP_BUILT="$("$SRC/scripts/build-app.sh" 2>&1 | tail -1)"
+APP_BUILT="$("$SRC/scripts/build-app.sh" 2>&1 | tail -1)" || die "Build failed. Run $SRC/scripts/build-app.sh to see the error."
 [ -d "$SRC/$APP_BUILT" ] || die "Build failed. Run $SRC/scripts/build-app.sh to see the error."
 ok "Built"
 
@@ -75,12 +77,15 @@ if os.path.exists(settings):
     try:
         with open(settings) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
     except Exception as e:
         sys.exit(f"    ~/.claude/settings.json isn't valid JSON ({e}). Fix it and run the installer again. Nothing was changed.")
     backup = settings + ".agent-deck-backup"
     if not os.path.exists(backup):
         shutil.copy2(settings, backup)
-line = data.get("statusLine") or {}
+line = data.get("statusLine")
+line = line if isinstance(line, dict) else {}
 current = line.get("command", "") if line.get("type", "command") == "command" else ""
 if current != tap:
     # Remember what was there so the tap can keep running it and uninstall can put it back.

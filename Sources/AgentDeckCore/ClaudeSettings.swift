@@ -1,7 +1,5 @@
 import Foundation
 
-/// Reads and writes `cleanupPeriodDays` in `~/.claude/settings.json` — Claude Code's own setting
-/// for how long saved sessions are kept. Every other key in the file is left as it is.
 public enum ClaudeSettings {
     public static let defaultRetentionDays = 30
 
@@ -23,18 +21,28 @@ public enum ClaudeSettings {
 
     public static func setRetentionDays(_ days: Int, _ paths: ClaudePaths) throws {
         precondition(days > 0)
+        try set("cleanupPeriodDays", days, paths)
+    }
+
+    static func model(_ paths: ClaudePaths) -> String? {
+        (try? Data(contentsOf: paths.settingsFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["model"] as? String
+    }
+
+    static func setModel(_ model: String?, _ paths: ClaudePaths) throws { try set("model", model, paths) }
+
+    static func set(_ key: String, _ value: Any?, _ paths: ClaudePaths) throws {
         let fm = FileManager.default
+        let backup = paths.settingsFile.appendingPathExtension("agent-deck-backup")
+        if !fm.fileExists(atPath: backup.path), let data = try? Data(contentsOf: paths.settingsFile) { try data.write(to: backup) }
+        // Read as late as possible: Claude Code and other tools write this file too.
         var obj: [String: Any] = [:]
         if fm.fileExists(atPath: paths.settingsFile.path) {
-            let data = try Data(contentsOf: paths.settingsFile)
-            guard let o = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            guard let o = try JSONSerialization.jsonObject(with: Data(contentsOf: paths.settingsFile)) as? [String: Any] else {
                 throw Failure.unreadable("it isn't a JSON object")
             }
             obj = o
-            let backup = paths.settingsFile.appendingPathExtension("agent-deck-backup")
-            if !fm.fileExists(atPath: backup.path) { try data.write(to: backup) }
         }
-        obj["cleanupPeriodDays"] = days
+        obj[key] = value
         let out = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try out.write(to: paths.settingsFile, options: .atomic)
     }
