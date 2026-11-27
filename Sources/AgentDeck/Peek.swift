@@ -19,7 +19,7 @@ struct PeekAlert {
         }
         var word: String {
             switch self {
-            case .needs: "Waiting on you"
+            case .needs: "Waiting for you"
             case .risky: "Careful"
             case .done: "Done"
             case .warn: "Close to the limit"
@@ -65,6 +65,8 @@ struct PeekAlert {
     var celebrate = true
     var seconds: Double?
     var quiet = false
+    var tag: String?
+    var soft = false
     var lifetime: Double? { seconds ?? kind.seconds }
 }
 
@@ -74,9 +76,9 @@ enum PeekPlacement: String, CaseIterable {
     static var current: PeekPlacement { PeekPlacement(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .automatic }
     var label: String {
         switch self {
-        case .automatic: "At the notch, or under the menu bar icon"
+        case .automatic: "At the notch"
         case .menuBar: "Under the menu bar icon"
-        case .banners: "As macOS notifications only"
+        case .banners: "As macOS notifications"
         }
     }
 }
@@ -168,7 +170,10 @@ enum Peek {
         state.doneText = nil
         resize(anchor: place)
         panel.orderFrontRegardless()
-        if !alert.quiet { NSSound(named: alert.kind.sound)?.play() }
+        if !alert.quiet, let sound = NSSound(named: alert.kind.sound) {
+            if alert.soft { sound.volume = 0.4 }
+            sound.play()
+        }
         NSAccessibility.post(element: panel, notification: .announcementRequested,
                              userInfo: [.announcement: "\(alert.kind.word). \(alert.title)", .priority: NSAccessibilityPriorityLevel.high.rawValue])
         Task {
@@ -321,17 +326,17 @@ private struct PeekView: View {
             HStack(alignment: .center, spacing: 12) {
                 Dot(mood: a.kind.mood, percent: state.percent, size: 56, celebrate: a.celebrate)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(a.kind.word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.8).foregroundStyle(color)
+                    Text((a.tag ?? a.kind.word).uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(color)
                     Text(a.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                     if let meta = a.meta {
-                        Text(meta).font(.system(size: 11.5)).foregroundStyle(Color(white: 0.62)).lineLimit(2)
+                        Text(meta).font(.system(size: 11)).foregroundStyle(Color(white: 0.62)).lineLimit(2)
                     }
                 }
                 Spacer(minLength: 0)
             }
             if let code = a.code, !code.isEmpty {
-                Text(code).font(.system(size: 12, design: .monospaced)).foregroundStyle(Color(white: 0.88)).lineLimit(4)
+                Text(code).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color(white: 0.88)).lineLimit(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 11).padding(.vertical, 9)
                     .background(Color(red: 0.086, green: 0.094, blue: 0.114), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -340,11 +345,11 @@ private struct PeekView: View {
             }
             if !a.lines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(a.lines, id: \.self) { Text($0).font(.system(size: 12.5)).foregroundStyle(Color(white: 0.78)) }
+                    ForEach(a.lines, id: \.self) { Text($0).font(.system(size: 12)).foregroundStyle(Color(white: 0.78)) }
                 }
             }
             if let done = state.doneText {
-                Label(done, systemImage: "checkmark.circle.fill").font(.system(size: 12.5)).foregroundStyle(Color(white: 0.7))
+                Label(done, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(Color(white: 0.7))
                     .symbolRenderingMode(.multicolor)
             } else if !a.actions.isEmpty {
                 HStack(spacing: 8) {
@@ -380,7 +385,7 @@ private struct PeekButton: ButtonStyle {
     let style: PeekAlert.Action.Style
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12.5, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
             .lineLimit(1)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 7)

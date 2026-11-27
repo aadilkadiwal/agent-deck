@@ -49,7 +49,7 @@ struct BarLabel: View {
         let out: Date? = if let shown, case .reachesLimit(let at) = model.forecast(shown), at > Date() { at } else { nil }
         let back = shown.flatMap { $0.percent() >= LimitWindow.full ? $0.resetsAt : nil }
         let pct = shown.map { "\(Int($0.percent().rounded()))%" } ?? "–"
-        let tail: String = if let back { " · back \(Fmt.clock(back))" } else if let out { " · out \(Fmt.clock(out))" } else { "" }
+        let tail: String = if let back { " · back \(Fmt.clock(back))" } else if let out { " · full ~\(Fmt.clock(out))" } else { "" }
         let limit = pct + tail
         let mood = model.mood(for: shown)
         // Below 50% (or the warning level, if lower) the number says nothing Dot's rim doesn't.
@@ -236,17 +236,20 @@ private final class StatusTarget: NSObject {
         StatusMenu.close()
         let menu = NSMenu()
         if let until = Notifier.snoozedUntil {
-            menu.addItem(item("Alerts are off until \(Fmt.clock(until)). Turn them back on") { Notifier.snooze(for: nil) })
+            let status = NSMenuItem(title: "Alerts snoozed until \(Fmt.clock(until))", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+            menu.addItem(item("Resume alerts") { Notifier.snooze(for: nil) })
         } else {
             menu.addItem(item("Snooze alerts for 1 hour") { Notifier.snooze(for: 3600) })
         }
         let on = UserDefaults.standard.bool(forKey: AppModel.keepAwakeKey)
-        let awake = item("Keep Mac awake while Claude works") { [weak self] in self?.model?.setKeepAwake(!on) }
+        let awake = item(AppModel.keepAwakeTitle) { [weak self] in self?.model?.setKeepAwake(!on) }
         awake.state = on ? .on : .off
         menu.addItem(awake)
         menu.addItem(.separator())
         menu.addItem(item("New session…") { [weak self] in self?.model?.startNewSession = true; StatusMenu.open() })
-        menu.addItem(item("Details…") { [weak self] in self?.model?.showDetails?(.sessions) })
+        menu.addItem(item("View details…") { [weak self] in self?.model?.showDetails?(.sessions) })
         menu.addItem(item("Settings…") { [weak self] in self?.model?.showSettings?() })
         menu.addItem(.separator())
         menu.addItem(item("Quit Agent Deck") { NSApp.terminate(nil) })

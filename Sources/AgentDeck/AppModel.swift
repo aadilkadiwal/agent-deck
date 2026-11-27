@@ -18,13 +18,23 @@ struct Away: Equatable {
     var commands = 0
     var agents = 0
 
+    var counts: String? {
+        let parts = [files.isEmpty ? nil : Fmt.count(files.count, "file"), commands == 0 ? nil : Fmt.count(commands, "command"),
+                     agents == 0 ? nil : Fmt.count(agents, "agent")].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var short: String? {
+        guard let counts else { return nil }
+        let mins = Int(Date().timeIntervalSince(since) / 60)
+        return (mins >= 1 ? "\(Fmt.span(Double(mins) * 60)) away · " : "Just now · ") + counts
+    }
+
     var line: String? {
         let parts = [files.isEmpty ? nil : "edited \(Fmt.count(files.count, "file"))",
                      commands == 0 ? nil : "ran \(Fmt.count(commands, "command"))",
-                     agents == 0 ? nil : "\(Fmt.count(agents, "agent")) done"].compactMap { $0 }
-        guard !parts.isEmpty else { return nil }
-        let mins = Int(Date().timeIntervalSince(since) / 60)
-        return (mins >= 1 ? "Since you looked, \(Fmt.span(Double(mins) * 60)): " : "Since you looked: ") + parts.joined(separator: " · ")
+                     agents == 0 ? nil : "\(Fmt.count(agents, "agent")) finished"].compactMap { $0 }
+        return parts.isEmpty ? nil : "Since you last opened the menu: " + parts.joined(separator: ", ")
     }
 }
 
@@ -32,6 +42,7 @@ struct Banner: Identifiable, Equatable {
     let id = UUID()
     let text: String
     var isError = false
+    var blocking = false
     var actionTitle: String?
     var action: (@MainActor () -> Void)?
     let shownAt = Date()
@@ -123,6 +134,7 @@ final class AppModel {
     private var reminded = Set<String>()
     private var blockedSince: [String: Date] = [:]
     static let keepAwakeKey = "keepAwake", statusKey = "checkServiceStatus"
+    static let keepAwakeTitle = "Keep the Mac awake while Claude works"
     static let remindAfter: TimeInterval = 300
 
     init() {
@@ -134,7 +146,7 @@ final class AppModel {
         samples = usageLog.load()
         Task { await checkNotifications() }
         if cli == nil {
-            banner = Banner(text: "Can't find Claude Code. Install it, then open Agent Deck again.", isError: true)
+            banner = Banner(text: "Can't find Claude Code. Install it, then open Agent Deck again.", isError: true, blocking: true)
         }
         // Open at login is on by default; after the first launch it's the user's choice in Settings.
         if !UserDefaults.standard.bool(forKey: "didSetLoginDefault") {
@@ -154,14 +166,12 @@ final class AppModel {
             }
             return Peek.show(alert, percent: self?.shownPercent)
         }
-        notifier.lastReply = { [weak self] sid in
-            guard let url = self?.history.first(where: { $0.sessionId == sid })?.fileURL else { return nil }
-            return await Task.detached { SessionDetail.lastReplyLine(url) }.value
-        }
+        notifier.lastReply = { [weak self] sid in await self?.lastReplyLine(sid) }
         notifier.hasApproval = { [weak self] sid in self?.approvals.contains { $0.sessionId == sid } ?? false }
+        // The Done alert already says how long it took, so only the counts.
         notifier.awayLine = { [weak self] sid in
             defer { self?.away[sid] = nil }
-            return self?.away[sid]?.line
+            return self?.away[sid]?.counts
         }
         notifier.canReply = { [weak self] sid in
             guard let s = self?.live.first(where: { $0.sessionId == sid }) else { return false }
@@ -632,6 +642,11 @@ final class AppModel {
     }
 
     // MARK: Reply
+
+    func lastReplyLine(_ sid: String) async -> String? {
+        guard let url = history.first(where: { $0.sessionId == sid })?.fileURL else { return nil }
+        return await Task.detached { SessionDetail.lastReplyLine(url) }.value
+    }
 
     /// Typed into the session's iTerm tab like /rename, with the same checks: never mixed into a
     /// draft, never into a question. A working session gets it once it's idle again.

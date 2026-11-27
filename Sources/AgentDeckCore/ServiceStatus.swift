@@ -25,8 +25,8 @@ public struct ServiceStatus: Equatable, Sendable {
         let incident = (o["incidents"] as? [[String: Any]] ?? []).first { i in
             (i["components"] as? [[String: Any]] ?? []).contains { watched($0["name"] as? String ?? "") }
         }
-        let who = name.hasPrefix("Claude API") ? "The Claude API" : name
-        let what = (incident?["name"] as? String).map { "\(who): \($0)." } ?? "\(who) has \(phrase(worst["status"]))."
+        let who = name.hasPrefix("Claude API") ? "the Claude API" : name
+        let what = "Anthropic reports " + ((incident?["name"] as? String).map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "\(phrase(worst["status"])) \(who)") + "."
         let link = (incident?["shortlink"] as? String).flatMap(URL.init(string:)) ?? URL(string: page)!
         return ServiceStatus(text: what, link: link)
     }
@@ -37,11 +37,11 @@ public struct ServiceStatus: Equatable, Sendable {
 
     private static func phrase(_ status: Any?) -> String {
         switch status as? String {
-        case "degraded_performance": "slower replies than usual"
-        case "partial_outage": "a partial outage"
-        case "major_outage": "a major outage"
-        case "under_maintenance": "maintenance going on"
-        default: "problems"
+        case "degraded_performance": "slower replies from"
+        case "partial_outage": "a partial outage of"
+        case "major_outage": "a major outage of"
+        case "under_maintenance": "maintenance on"
+        default: "problems with"
         }
     }
 }

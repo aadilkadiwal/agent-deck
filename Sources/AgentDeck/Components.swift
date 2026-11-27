@@ -70,7 +70,7 @@ struct ContextBar: View {
         HStack(spacing: 4) {
             Capsule().fill(Color.primary.opacity(0.12)).frame(width: 36, height: 4)
                 .overlay(alignment: .leading) { Capsule().fill(tint).frame(width: 36 * CGFloat(percent) / 100, height: 4) }
-            Text("\(percent)%").monospacedDigit().foregroundStyle(tint)
+            Text("\(percent)%").monospacedDigit().foregroundStyle(percent >= 90 ? Tone.riskText : percent >= Self.warnAt ? Tone.warnText : .secondary)
         }
         .help("Context: \(percent)% used · updated \(Fmt.ago(reading.updatedAt))")
         .accessibilityElement(children: .ignore)
@@ -179,7 +179,7 @@ struct HoverRow<Content: View>: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background(RoundedRectangle(cornerRadius: Radius.row).fill(hover || focused || selected ? Color.primary.opacity(0.07) : .clear))
             .overlay {
-                if focused || selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5) }
+                if focused || selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.5) }
             }
             .animation(Motion.fast(reduceMotion), value: hover)
             .contentShape(Rectangle())
@@ -229,7 +229,7 @@ struct ActivityLine: View {
         let doing = s.state == .busy ? a?.tool.map { t in a?.detail.map { "\(t): \($0)" } ?? t } : nil
         let timed = s.state == .busy && model.busySince[s.sessionId] != nil
         let status = Self.isShown(s, model) ? [doing ?? (timed ? nil : Self.stateText(s)), agents].compactMap { $0 }.joined(separator: " · ") : ""
-        let tint: Color = s.state == .blocked && !s.isLeftover ? .orange : .secondary
+        let tint: Color = s.state == .blocked && !s.isLeftover ? Tone.warnText : .secondary
         // The folder gives way first, so the status and its timer stay readable.
         HStack(spacing: 0) {
             if let prefix {
@@ -305,7 +305,7 @@ extension View {
         font(.callout)
             .controlSize(.small)
             .padding(8)
-            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.accentColor.opacity(0.1)))
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.06)))
     }
 }
 
@@ -353,7 +353,7 @@ struct LastHourBar: View {
                             .foregroundStyle(.secondary).lineLimit(1)
                         if collapsible {
                             Spacer(minLength: 4)
-                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                                 .rotationEffect(.degrees(open ? 90 : 0))
                         }
                     }
@@ -364,14 +364,15 @@ struct LastHourBar: View {
                 .help(collapsible ? (open ? "Hide the split by session" : "Show the split by session") : "")
                 if open {
                 GeometryReader { g in
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         ForEach(parts) { p in
-                            RoundedRectangle(cornerRadius: 2).fill(p.color)
-                                .frame(width: max(3, (g.size.width - CGFloat(parts.count - 1) * 2) * p.points / total))
+                            Rectangle().fill(p.color).frame(width: max(3, g.size.width * p.points / 100))
                         }
                     }
+                    .clipShape(Capsule())
                 }
                 .frame(height: 6)
+                .background(Capsule().fill(Color.primary.opacity(0.12)))
                 ForEach(parts.prefix(4)) { p in
                     HStack(spacing: 6) {
                         Circle().fill(p.color).frame(width: 6, height: 6)
@@ -397,20 +398,19 @@ struct LimitStopLine: View {
         let at = model.limitHit?.resetsAt.map(Fmt.clock)
         let blocker = model.typingBlockers[session.sessionId]
         VStack(alignment: .leading, spacing: 3) {
-            Text("Stopped at the limit").foregroundStyle(.orange).lineLimit(1)
-            Button {
-                model.toggleContinue(session)
-            } label: {
-                Label(queued ? "Continues at \(at ?? "reset")" : at.map { "Continue at \($0)" } ?? "Continue now",
-                      systemImage: queued ? "checkmark.circle.fill" : "play.circle")
-                    .lineLimit(1).fixedSize()
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Capsule().fill(Color.accentColor.opacity(queued ? 0.25 : 0.12)))
+            Text(queued ? "Stopped at the limit · continues \(at ?? "at the reset")" : "Stopped at the limit").foregroundStyle(Tone.warnText).lineLimit(1)
+            // While the limit holds, the banner above carries the one Continue button.
+            if model.limitHit == nil {
+                Button { model.toggleContinue(session) } label: {
+                    Label("Continue now", systemImage: "play.circle")
+                        .lineLimit(1).fixedSize()
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .disabled(blocker != nil)
+                .help(blocker ?? "Types \"continue\" into it")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            .disabled(blocker != nil)
-            .help(blocker ?? (queued ? "Click to cancel" : "Types \"continue\" into it the moment the limit resets"))
         }
         .font(.subheadline)
     }

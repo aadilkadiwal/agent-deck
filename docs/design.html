@@ -49,13 +49,13 @@ code { font-size: .9em; }
 
   <section>
     <h2>Dot, in the menu bar</h2>
-    <div class="bars"><img src="img/bar.png" alt="Just Dot at 34%"><img src="img/bar-limit.png" alt="Dot and 86% · out 15:58"><img src="img/bar-reached.png" alt="Dot and 100% · back 17:58"></div>
+    <div class="bars"><img src="img/bar.png" alt="Just Dot at 34%"><img src="img/bar-limit.png" alt="Dot and 86% · full ~15:58"><img src="img/bar-reached.png" alt="Dot and 100% · back 17:58"></div>
     <ul>
-      <li>Below 50% it's just Dot. Past that you get the number for whichever limit is closer, 5-hour or weekly, plus "out 15:58" when you're on pace to run out and "back 17:58" once you're at 100%.</li>
+      <li>Below 50% it's just Dot. Past that you get the number for whichever limit is closer, 5-hour or weekly, plus "full ~15:58" when you're on pace to run out and "back 17:58" once you're at 100%.</li>
       <li>Dot's rim is the same meter: grey, orange from your warning level (80% unless you change it), red when full.</li>
       <li>Its face shows what your sessions need. A blue arc spins while a session works; an orange "!" means one is waiting for you, a red one that it wants to run something risky.</li>
       <li>In the menu bar Dot holds still between blinks, so it costs next to no CPU.</li>
-      <li>Right-click Dot to snooze alerts for an hour, start a new session, or open Details or Settings.</li>
+      <li>Right-click Dot to snooze alerts for an hour, keep the Mac awake while Claude works, start a new session, or open Details or Settings.</li>
     </ul>
     <div class="faces">
       <div class="face"><img src="img/dot-idle.png" alt=""><b>Idle</b><span>blinks now and then</span></div>
@@ -76,7 +76,8 @@ code { font-size: .9em; }
       <figure><img src="img/menu.png" alt="The dropdown with three running sessions" width="370"></figure>
       <ul>
         <li>Running and Recent tabs. It opens on Running, or on Recent when nothing is running. ⌘1 and ⌘2 switch.</li>
-        <li>Dot and one sentence on top: what's running, and whether anything needs you. The counts are filters.</li>
+        <li>Each bar says when it resets ("resets 03:33", "resets Wed"). The thin tick is how much of that window's time has gone: fill past it means you're using it faster than the clock.</li>
+        <li>Dot and one sentence on top: what's running, and whether anything needs you. The counts are filters; they show as chips when you point at them. A snooze or keep-awake shows here too.</li>
         <li>Two slim bars for the 5-hour and weekly limits with their reset times. "Last hour" opens into a split by session.</li>
         <li>Each session: a blue dot while it works, its folder, its branch when that isn't main, and how long it has been working. Context shows once it passes 70%.</li>
         <li>↑↓ to move, ⏎ to open, ⌘K for every action on the selected row.</li>
@@ -85,7 +86,7 @@ code { font-size: .9em; }
     <div class="row">
       <figure><img src="img/menu-recent.png" alt="The Recent tab with six closed sessions" width="370"></figure>
       <ul>
-        <li>Recent lists closed sessions with how long ago you used them. Click one to resume it in iTerm.</li>
+        <li>Recent lists closed sessions with how long ago you used them. Click one to preview it; resume it in your terminal.</li>
         <li>Filtering by working or idle shrinks the panel to fit.</li>
       </ul>
     </div>
@@ -94,21 +95,34 @@ code { font-size: .9em; }
   <section>
     <h2>Answering prompts</h2>
     <div class="row">
-      <figure><img src="img/menu-prompts.png" alt="Three prompts waiting in the dropdown" width="370"></figure>
+      <figure><img src="img/menu-prompts.png" alt="Three prompts waiting: one card in focus, two one-line rows" width="370"></figure>
       <ul>
-        <li>Permission prompts, questions and plans show up as cards: a coloured word with how long it has waited, one sentence, the command, then the buttons.</li>
+        <li>One prompt is in focus as a card; the others wait as one-line rows, with a red RISKY tag where it applies. Click one to bring it forward.</li>
+        <li>A card says who wants what, what the session did since you last looked, the command, then the buttons. "For this session" allows the suggested rule until the session ends; its arrow keeps it for the project or everywhere.</li>
         <li>Risky commands (deleting folders, force-pushing, <code>sudo</code>…) say so in red, and Deny is the main button. They can only be allowed with a click.</li>
-        <li>⌘⏎ approves the selected card, ⌘⌫ denies it, 1–4 answers a question. From any app, ⌃⌥A and ⌃⌥D answer the oldest prompt.</li>
+        <li>One keyboard line fits the selected card: ⌘⏎ allow, ⌘⌫ deny, 1–4 answer. From any app, ⌃⌥A and ⌃⌥D answer the oldest prompt and ⌃⌥J opens its terminal.</li>
         <li>The prompt stays in the terminal too: whichever you answer first wins.</li>
       </ul>
     </div>
   </section>
 
   <section>
+    <h2>Alerts</h2>
+    <div class="pair">
+      <figure><img src="img/peek-risky.png" alt="A risky prompt alert with Deny on the right"><figcaption>A risky prompt says what the risk is, like the card, and keeps Deny where Allow usually sits.</figcaption></figure>
+      <figure><img src="img/peek-done.png" alt="A Done alert with Claude's last line and Reply"><figcaption>A finished task shows Claude's last line and what it did. Reply types your follow-up into its terminal.</figcaption></figure>
+    </div>
+    <div class="pair">
+      <figure><img src="img/peek-question.png" alt="A question alert with its answers as buttons"><figcaption>A short single-choice question can be answered right in the alert.</figcaption></figure>
+      <figure><img src="img/menu-new.png" alt="New session form" width="370"><figcaption>New session: pick a folder, open it in your terminal (Return), or start it on your phone. In a git repo it can get its own worktree.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
     <h2>At the limit</h2>
     <div class="pair">
-      <figure><img src="img/menu-limit.png" alt="At 86%, the 5-hour bar is orange and says out 15:58" width="370"><figcaption>Near the limit: the bar turns orange and says when it runs out. Idle Opus sessions can switch to Sonnet.</figcaption></figure>
-      <figure><img src="img/menu-reached.png" alt="At 100%, Limit reached, back at 17:58" width="370"><figcaption>At 100%: when it's back, and sessions that stopped on the limit can continue on their own when it resets.</figcaption></figure>
+      <figure><img src="img/menu-limit.png" alt="At 86%, the 5-hour bar is orange and says full about 15:58" width="370"><figcaption>Near the limit: the bar turns orange and says when it runs out. Idle Opus sessions can switch to Sonnet.</figcaption></figure>
+      <figure><img src="img/menu-reached.png" alt="At 100%, Limit reached, back at 17:58" width="370"><figcaption>At 100%: when it's back, and one button to continue the sessions that stopped there once it resets.</figcaption></figure>
     </div>
   </section>
 
@@ -117,7 +131,7 @@ code { font-size: .9em; }
     <div class="row">
       <figure><img src="img/menu-welcome.png" alt="Hi, I'm Dot welcome card" width="370"></figure>
       <ul>
-        <li>Dot says hello, checks that the hooks work, and offers ⌃⌥O to open the menu from any app.</li>
+        <li>Dot says hello, explains the rim and the tick, checks that prompts can be answered here, and offers ⌃⌥O to open the menu from any app. The bars stay visible under it.</li>
       </ul>
     </div>
   </section>
@@ -133,8 +147,8 @@ code { font-size: .9em; }
   <section>
     <h2>Settings</h2>
     <div class="pair">
-      <figure><img src="img/settings-notifications.png" alt="Notifications settings"><figcaption>Alerts drop from the notch, each with one of Dot's own sounds; Preview plays them. A finished task shows the first line of Claude's reply. In a Focus only prompts get through, quietly, and the rest wait until it ends.</figcaption></figure>
-      <figure><img src="img/settings-health.png" alt="Health settings"><figcaption>Health shows whether the hooks work and repairs them in one click.</figcaption></figure>
+      <figure><img src="img/settings-alerts.png" alt="Alerts settings"><figcaption>Alerts drop from the notch, each with one of Dot's own sounds; Preview plays them, and Warn at moves in steps of 5. A finished task shows the first line of Claude's reply. In a Focus only prompts get through, quietly, and the rest wait until it ends.</figcaption></figure>
+      <figure><img src="img/settings-health.png" alt="Health settings"><figcaption>Health shows whether the hooks work and repairs them in one click. Its banner only appears when something needs a repair.</figcaption></figure>
     </div>
   </section>
 
