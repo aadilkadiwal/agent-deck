@@ -42,24 +42,19 @@ struct BarLabel: View {
     var body: some View {
         let five = model.usage?.fiveHour?.percent()
         let week = model.usage?.weekly?.percent()
-        let pct = { (p: Double?) in p.map { "\(Int($0.rounded()))%" } ?? "–" }
         let style = BarStyle(rawValue: barStyle) ?? .closest
         let weeklyCloser = style != .ringOnly && (week ?? 0) > (five ?? 0)
         let shown = weeklyCloser ? model.usage?.weekly : model.usage?.fiveHour
         let out: Date? = if let shown, case .reachesLimit(let at) = model.forecast(shown), at > Date() { at } else { nil }
         let back = shown.flatMap { $0.percent() >= LimitWindow.full ? $0.resetsAt : nil }
-        let limit = (weeklyCloser ? "Weekly \(pct(week))" : pct(five))
-            + (back.map { " · resets \(Fmt.clock($0))" } ?? out.map { " · out \(Fmt.clock($0))" } ?? "")
-        let waiting = model.count(.blocked)
-        let mood: DotMood = model.pendingApprovals.contains { $0.risk != nil } ? .risky
-            : model.needsYou || !model.pendingApprovals.isEmpty ? .needs
-            : back != nil ? .reached
-            : (shown?.percent() ?? 0) >= Notifier.warnAt ? (out != nil ? .runsOut : .warn)
-            : model.count(.busy) > 0 ? .working : .idle
+        let pct = shown.map { "\(Int($0.percent().rounded()))%" } ?? "–"
+        let tail: String = if let back { " · back \(Fmt.clock(back))" } else if let out { " · out \(Fmt.clock(out))" } else { "" }
+        let limit = pct + tail
+        let mood = model.mood(for: shown)
         HStack(spacing: 4) {
-            Dot(mood: mood, percent: weeklyCloser ? week : five, size: 18, extras: mood == .needs, fps: 15)
+            Dot(mood: mood, percent: shown?.percent(), size: 18, extras: mood == .needs || mood == .risky, fps: 15)
             switch style {
-            case .closest: Text(waiting > 0 ? "\(limit) · \(waiting) waiting" : limit)
+            case .closest: Text(limit)
             case .withSessions: Text("\(limit) · \(model.live.count)")
             case .ringOnly: EmptyView()
             }
@@ -76,7 +71,6 @@ struct BarLabel: View {
                 openWindow(id: "details")
                 NSApp.activate(ignoringOtherApps: true)
             }
-            if UserDefaults.standard.bool(forKey: PinnedPanel.key) { PinnedPanel.shared.show(model) }
         }
     }
 }

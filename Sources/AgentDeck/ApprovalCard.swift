@@ -4,14 +4,12 @@ import SwiftUI
 struct ApprovalCard: View {
     let model: AppModel
     let request: ApprovalRequest
-    var hotkeyTarget = false
     var roomy = false
     var selected = false
     @State private var expanded = false
     @State private var denying = false
     @State private var reason = ""
     @FocusState private var reasonFocused: Bool
-    @State private var arrived = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let previewLines = 8
 
@@ -21,54 +19,55 @@ struct ApprovalCard: View {
         switch outcome {
         case .deny, .denyWith: .red
         case .allow, .acceptEdits, .answers: .green
-        case .terminal: .orange
+        case .terminal: .secondary
         case nil: risk == nil ? .orange : .red
         }
     }
 
-    private var place: String? {
-        let name = model.sessionName(request.sessionId, cwd: request.cwd)
-        let folder = Fmt.folderName(request.cwd)
-        let branch = model.branches[request.cwd].map { "⎇ \($0)" }
-        let parts = [folder == name || folder.isEmpty ? nil : folder, branch].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    private var word: String {
+        if let risk { return "Risky · \(risk)" }
+        switch request.kind {
+        case .permission: return "Waiting on you"
+        case .plan: return "Plan to review"
+        case .question: return request.questions.count == 1 ? "Question" : "\(request.questions.count) questions"
+        }
+    }
+
+    private var name: String { model.sessionName(request.sessionId, cwd: request.cwd) }
+
+    private var sentence: String {
+        switch request.kind {
+        case .permission: return "\(name) wants to \(request.toolName == "Bash" ? "run" : "use") \(request.toolName)"
+        case .plan: return "\(name) has a plan for you"
+        case .question: return "\(name) asks"
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Circle().fill(SessionColor.of(request.sessionId)).frame(width: 7, height: 7)
-                Text(model.sessionName(request.sessionId, cwd: request.cwd)).font(.body.weight(.semibold)).lineLimit(1)
-                    .layoutPriority(1)
-                if let place {
-                    Text("· \(place)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(tint)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let s = max(0, Int(ctx.date.timeIntervalSince(request.receivedAt)))
                     Text(String(format: "%d:%02d", s / 60, s % 60)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
-                        .contentTransition(.numericText(countsDown: false))
-                        .animation(Motion.fast(reduceMotion), value: s)
+                        .lineLimit(1).fixedSize()
                 }
+                .frame(minWidth: 34, alignment: .trailing)
                 IconButton(symbol: "terminal", help: "Show it in the terminal instead") { model.openSession(id: request.sessionId) }
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: icon).foregroundStyle(risk == nil ? Color.orange : Color.red)
-                        .symbolEffect(.bounce, value: arrived)
-                    Text(title).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                if let risk {
-                    Text("RISKY · \(risk)")
-                        .font(.subheadline.weight(.bold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.red))
-                        .help("This command \(risk). It can't be allowed with ⌃⌥A or ⌘⏎; click Allow once if you mean it.")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(sentence).font(.body.weight(.semibold)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                if let place = Fmt.place(request.cwd, branch: model.branches[request.cwd], name: name) {
+                    Text(place).font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
             .accessibilityElement(children: .combine)
+            .help(risk.map { "This command \($0). It can't be allowed with ⌃⌥A or ⌘⏎; click Allow once if you mean it." } ?? request.cwd)
             if let d = request.description, request.kind == .permission {
-                Text(d).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Text(d).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !request.detail.isEmpty {
                 let lines = request.detail.split(separator: "\n", omittingEmptySubsequences: false)
@@ -83,6 +82,7 @@ struct ApprovalCard: View {
                 .frame(maxHeight: roomy ? 520 : expanded ? 260 : 150)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.primary.opacity(0.06)))
+                .overlay { if risk != nil { RoundedRectangle(cornerRadius: Radius.inner).strokeBorder(Color.red.opacity(0.6)) } }
                 if long {
                     Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(Motion.spring(reduced: reduceMotion)) { expanded.toggle() } }
                         .buttonStyle(.link).font(.subheadline)
@@ -96,31 +96,23 @@ struct ApprovalCard: View {
         }
         .font(.callout)
         .controlSize(.small)
-        .padding(8)
-        .padding(.leading, 4)
-        .background(RoundedRectangle(cornerRadius: Radius.row).fill(tint.opacity(0.1)))
+        .padding(10)
+        .padding(.leading, 3)
+        .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
         .overlay(alignment: .leading) {
-            UnevenRoundedRectangle(topLeadingRadius: Radius.row, bottomLeadingRadius: Radius.row).fill(tint).frame(width: 4)
+            UnevenRoundedRectangle(topLeadingRadius: Radius.row, bottomLeadingRadius: Radius.row).fill(tint).frame(width: 3)
         }
         .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.accentColor, lineWidth: 2) } }
         .overlay { if let o = outcome { outcomeView(o) } }
         .animation(Motion.snappy(reduceMotion), value: outcome)
-        .keyframeAnimator(initialValue: 0.0, trigger: isDenied) { v, x in
-            v.offset(x: x)
-        } keyframes: { _ in
-            KeyframeTrack {
-                LinearKeyframe(3, duration: 0.05)
-                LinearKeyframe(-3, duration: 0.07)
-                LinearKeyframe(3, duration: 0.07)
-                LinearKeyframe(-3, duration: 0.07)
-                LinearKeyframe(0, duration: 0.05)
-            }
-        }
-        .onAppear { if !reduceMotion { arrived = true } }
     }
 
-    private var isDenied: Bool {
-        switch outcome { case .deny, .denyWith: true; default: false }
+    static func transition(_ outcome: ApprovalAnswer?, reduced: Bool) -> AnyTransition {
+        if reduced { return .opacity }
+        let denied: Bool = switch outcome { case .deny, .denyWith: true; default: false }
+        return .asymmetric(insertion: .push(from: .top),
+                           removal: denied ? .move(edge: .leading).combined(with: .opacity)
+                                           : .opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
     }
 
     private func outcomeView(_ o: ApprovalAnswer) -> some View {
@@ -174,23 +166,6 @@ struct ApprovalCard: View {
         return out
     }
 
-    private var icon: String {
-        switch request.kind {
-        case .permission: return "hand.raised.fill"
-        case .plan: return "list.bullet.clipboard"
-        case .question: return "questionmark.bubble.fill"
-        }
-    }
-
-    private var title: String {
-        switch request.kind {
-        case .permission:
-            return request.toolName == "Bash" ? "wants to run a command" : "wants to use \(request.toolName)"
-        case .plan: return "has a plan for you"
-        case .question: return request.questions.count == 1 ? "asks" : "asks \(request.questions.count) questions"
-        }
-    }
-
     @ViewBuilder private var permissionButtons: some View {
         if denying { denyForm } else { decideButtons }
     }
@@ -201,7 +176,8 @@ struct ApprovalCard: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($reasonFocused)
                 .onSubmit(deny)
-                .onAppear { reasonFocused = true }
+                // A pass later: set while the field is still being inserted, the focus doesn't take.
+                .task { reasonFocused = true }
                 .onExitCommand { denying = false }
             Button("Cancel") { denying = false }
             Button("Deny", role: .destructive, action: deny).keyboardShortcut(.defaultAction)
@@ -217,19 +193,15 @@ struct ApprovalCard: View {
         if risk != nil { riskyButtons } else { normalButtons }
     }
 
+    // Risky: Deny is the primary button and sits where Allow usually is, so a habit click is the safe one.
     private var riskyButtons: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
-                    .buttonStyle(.borderedProminent).tint(.gray)
-                    .help("Deny, and optionally tell Claude why")
-                Spacer()
-                Button("Allow once") { model.answer(request.id, .allow(always: false)) }
-                    .help("Allow this one command. Always allow isn't offered for risky commands.")
-            }
-            if hotkeyTarget {
-                Text("⌃⌥D deny from any app · Allow needs a click").font(.subheadline).foregroundStyle(.secondary)
-            }
+        HStack {
+            Button("Allow once") { model.answer(request.id, .allow(always: false)) }
+                .help("Allow this one command. Always allow isn't offered for risky commands.")
+            Spacer()
+            Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
+                .buttonStyle(.borderedProminent).tint(.red)
+                .help("Deny, and optionally tell Claude why")
         }
     }
 
@@ -239,17 +211,15 @@ struct ApprovalCard: View {
                 Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
                     .help("Deny, and optionally tell Claude why")
                 Spacer()
-                if request.alwaysLabel != nil {
+                if let rule = request.alwaysLabel {
                     Button("Always allow") { model.answer(request.id, .allow(always: true)) }
+                        .help("Allows it now and saves \(rule), so Claude Code stops asking for it in this project")
                 }
                 Button("Allow") { model.answer(request.id, .allow(always: false)) }.buttonStyle(.borderedProminent)
             }
             if let rule = request.alwaysLabel {
                 Text("Always allow saves \(rule)").font(.subheadline).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(rule)
-            }
-            if hotkeyTarget {
-                Text("⌃⌥A allow · ⌃⌥D deny, from any app").font(.subheadline).foregroundStyle(.secondary)
             }
         }
     }
@@ -260,6 +230,19 @@ struct ApprovalCard: View {
             Button("Approve, auto-accept edits") { model.approvePlan(request, acceptEdits: true) }
                 .help("Approve, and let Claude make file edits in this session without asking")
             Button("Approve plan") { model.approvePlan(request, acceptEdits: false) }.buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+struct HotkeyHint: View {
+    let model: AppModel
+
+    var body: some View {
+        if let r = model.pendingApprovals.first(where: { $0.kind == .permission }) {
+            Text(r.risk == nil ? "⌃⌥A allow · ⌃⌥D deny the oldest prompt, from any app"
+                               : "⌃⌥D denies the oldest prompt from any app · it's risky, so Allow needs a click")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

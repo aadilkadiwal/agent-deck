@@ -25,6 +25,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var peek: ((PeekAlert) -> Bool)?
     var hasApproval: ((String) -> Bool)?
     private var busySince: [String: Date] = [:]
+    private var lastCelebrated: Date?
 
     override init() {
         super.init()
@@ -62,7 +63,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             if s.state == .idle, prev?.state == .busy, let start = busySince[s.sessionId],
                now.timeIntervalSince(start) >= Self.longTask, enabled(Key.finished) {
                 let took = "Finished · took \(Fmt.duration(now.timeIntervalSince(start)))"
-                post(PeekAlert(id: "done-\(s.sessionId)", kind: .done, title: name(s), meta: took, actions: [show(s.sessionId)]),
+                let big = now.timeIntervalSince(start) >= 600 || !(lastCelebrated.map(Calendar.current.isDateInToday) ?? false)
+                if big { lastCelebrated = now }
+                post(PeekAlert(id: "done-\(s.sessionId)", kind: .done, title: name(s), meta: took, actions: [show(s.sessionId)], celebrate: big),
                      body: took, sessionId: s.sessionId)
             }
             if s.state == .idle { busySince[s.sessionId] = nil }
@@ -146,7 +149,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func approvalArrived(_ r: ApprovalRequest, name: String) {
+        // The session can read as waiting a moment before its card arrives; the card replaces that alert.
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["wait-\(r.sessionId)"])
+        Peek.dismiss(id: "wait-\(r.sessionId)")
         guard enabled(Key.waiting) else { return }
         let title: String, body: String, category: String?
         switch r.kind {
@@ -172,7 +177,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                     + (r.alwaysLabel == nil ? [] : [.init(title: "Always allow", done: "Always allowed") { decide(.allow(always: true)) }])
                     + [.init(title: "Allow", style: .primary, done: "Allowed") { decide(.allow(always: false)) }]
         case .plan:
-            alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))
+            alert.lines = Array(body.split(separator: "\n").map { $0.replacingOccurrences(of: #"^\s*#+\s*"#, with: "", options: .regularExpression) }
+                .filter { !$0.isEmpty }.prefix(3))
             alert.actions = [.init(title: "Review the plan", style: .primary, run: review)]
         case .question:
             alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))

@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/AgentDeck"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp scripts/hook.py "$APP/Contents/Resources/hook.py"   # Settings → Health repairs hooks with it
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"   # Dot; notifications carry it too
 # macOS plays custom notification sounds only from the app bundle
 cp /System/Library/Sounds/{Glass,Sosumi,Pop}.aiff "$APP/Contents/Resources/"
 

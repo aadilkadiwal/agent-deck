@@ -35,6 +35,9 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var old: [HistorySession] { model.closed.filter { $0.lastActive < cutoff } }
+    private var hooksBroken: Bool {
+        model.health?["error"] != nil || Self.hookKeys.contains { model.health?[$0.0] as? String == "missing" }
+    }
     static let hookKeys = [("claude", "Claude Code hooks"), ("statusLine", "Status line (usage numbers)")]
 
     private func healthRow(_ title: String, _ state: String?) -> some View {
@@ -56,7 +59,7 @@ struct SettingsView: View {
         TabView(selection: Binding(get: { SettingsPage(rawValue: page) ?? .general }, set: { page = $0.rawValue })) {
             ForEach(SettingsPage.allCases) { p in
                 VStack(spacing: 0) {
-                    if p == .general || p == .health { healthSummary.padding([.horizontal, .top], 20) }
+                    if p == .health || (p == .general && hooksBroken) { healthSummary.padding([.horizontal, .top], 20) }
                     Form {
                         switch p {
                         case .general: general
@@ -90,20 +93,18 @@ struct SettingsView: View {
                     .font(.callout).foregroundStyle(.orange)
             }
         } header: { Text("Menu") } footer: {
-            Text("Opens the dropdown with the newest question selected, so ⌘⏎ answers it and esc takes you back. ⌃⌥Space also switches input sources in macOS when you have more than one keyboard language.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Opens the dropdown with the newest question selected, so ⌘⏎ answers it and esc takes you back. ⌃⌥Space also switches input sources in macOS when you have more than one keyboard language.")
         }
         Section {
             LabeledContent("Allow the oldest permission prompt", value: "⌃⌥A")
             LabeledContent("Deny the oldest permission prompt", value: "⌃⌥D")
         } header: { Text("Prompts") } footer: {
-            Text("Active only while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, can't be allowed with a shortcut: click Allow once in the menu.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Active only while a permission prompt is waiting. Risky commands, like deleting folders or force-pushing, can't be allowed with a shortcut: click Allow once in the menu.")
         }
         Section {
             LabeledContent("Move · open", value: "↑ ↓ · ⏎")
             LabeledContent("All actions for the selected row", value: "⌘K")
-            LabeledContent("Approve the selected card", value: "⌘⏎")
+            LabeledContent("Approve · deny the selected card", value: "⌘⏎ · ⌘⌫")
             LabeledContent("Phone · compact · clear · rename", value: "P · C · K · R")
             LabeledContent("Stop the selected session", value: "⌘⌫")
             LabeledContent("Search · refresh · new session", value: "⌘F · ⌘R · ⌘N")
@@ -142,15 +143,13 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
-            Text("Claude Code deletes saved sessions older than this on its own (setting: cleanupPeriodDays). 30 days is the most Agent Deck offers.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Claude Code deletes saved sessions older than this on its own. 30 days is the most Agent Deck offers.")
         } header: { Text("History") }
 
         Section {
             Toggle("Answer Claude's prompts from Agent Deck", isOn: Binding(get: { model.approvalsOn }, set: { model.setApprovals($0) }))
         } header: { Text("Prompts") } footer: {
-            Text("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting; risky commands need a click. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Permission prompts, questions and plans show up in the menu and as notifications with Allow / Deny buttons. ⌃⌥A allows and ⌃⌥D denies the oldest permission prompt from any app, only while one is waiting; risky commands need a click. The prompt stays in the terminal too: whichever you answer first wins. \"Always allow\" saves the rule Claude Code itself suggests. Off: Claude Code asks only in the terminal.")
         }
 
         Section {
@@ -185,9 +184,18 @@ struct SettingsView: View {
             Picker("Show alerts", selection: $peekPlacement) {
                 ForEach(PeekPlacement.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
             }
+            LabeledContent("Preview") {
+                HStack(spacing: 6) {
+                    ForEach(Preview.allCases, id: \.self) { p in
+                        Button { p.show() } label: { Label(p.title, systemImage: "play.fill") }
+                            .help("Shows a sample \(p.title.lowercased()) alert with its sound")
+                    }
+                }
+                .controlSize(.small)
+                .disabled(peekPlacement == PeekPlacement.banners.rawValue)
+            }
         } header: { Text("Alerts") } footer: {
-            Text("Alerts drop from the notch, or from Agent Deck's menu bar icon on a screen without one, and play a sound for the kind of alert. They're hidden from screen sharing. When the screen is locked or you've been away for two minutes, they go out as macOS notifications instead.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Alerts drop from the notch, or from Agent Deck's menu bar icon on a screen without one, and play a sound for the kind of alert. They're hidden from screen sharing. When the screen is locked or you've been away for two minutes, they go out as macOS notifications instead.")
         }
         Section {
             Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
@@ -206,8 +214,7 @@ struct SettingsView: View {
                 }
             }
         } header: { Text("Notify me when") } footer: {
-            Text("Limits count everyone signed in to the same Claude account. Each Mac with Agent Deck warns on its own, even when nobody is using Claude on it. Warn at takes any level from 1 to 99%. If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Limits count everyone signed in to the same Claude account. Each Mac with Agent Deck warns on its own, even when nobody is using Claude on it. Warn at takes any level from 1 to 99%. If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
         }
     }
 
@@ -239,8 +246,7 @@ struct SettingsView: View {
             }
             Toggle("Clean up leftovers automatically once a day", isOn: $autoCleanLeftovers)
         } header: { Text("Claude storage") } footer: {
-            Text("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Leftovers are scratchpads, undo backups and other files Claude Code keeps per session, whose session was deleted or expired. Anything used in the last day is kept. They go to the Trash.")
         }
 
         Section {
@@ -258,8 +264,7 @@ struct SettingsView: View {
                 }
             }
         } header: { Text("Clean up now") } footer: {
-            Text("This frees space on your Mac. Sessions listed on claude.ai or in the phone app are kept on Anthropic's servers and aren't affected.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("This frees space on your Mac. Sessions listed on claude.ai or in the phone app are kept on Anthropic's servers and aren't affected.")
         }
     }
 
@@ -272,16 +277,22 @@ struct SettingsView: View {
                 Button("Repair hooks") { Task { await model.repairHooks() } }
             }
         } header: { Text("Health") } footer: {
-            Text("Repair puts Agent Deck's hooks back without touching your own. A missing status line comes back by running install.sh again.")
-                .font(.subheadline).foregroundStyle(.secondary)
+            Note("Repair puts Agent Deck's hooks back without touching your own. A missing status line comes back by running install.sh again.")
         }
 
         Section {
-            LabeledContent("Usage snapshot", value: FileManager.default.fileExists(atPath: model.paths.statusFile.path)
-                           ? "received \(model.usage.map { Fmt.ago($0.updatedAt) } ?? "—")" : "not received yet")
-            LabeledContent("Account usage", value: model.accountStatusText)
-            LabeledContent("claude command", value: model.cli?.executable.path ?? "not found")
+            LabeledContent("Usage numbers", value: model.usageSourceText)
+            LabeledContent("Claude Code", value: model.cli.map { Fmt.shortPath($0.executable.path) } ?? "not found")
         } header: { Text("Status") }
+    }
+}
+
+private struct Note: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text).font(.subheadline).foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -316,6 +327,33 @@ struct StorageBar: View {
     }
 }
 
+enum Preview: CaseIterable {
+    case needs, limit, done
+
+    var title: String {
+        switch self {
+        case .needs: "Needs you"
+        case .limit: "Limit"
+        case .done: "Done"
+        }
+    }
+
+    @MainActor func show() {
+        let alert: PeekAlert = switch self {
+        case .needs:
+            PeekAlert(id: "preview", kind: .needs, title: "my-app wants to run Bash", code: "npm run test",
+                      actions: [.init(title: "Deny", done: "Denied") {}, .init(title: "Allow", style: .primary, done: "Allowed") {}], seconds: 6)
+        case .limit:
+            PeekAlert(id: "preview", kind: .warn, title: "5-hour limit at \(Int(Notifier.warnAt))%",
+                      meta: Fmt.resetsTitle(Date().addingTimeInterval(95 * 60)), percent: Notifier.warnAt)
+        case .done:
+            PeekAlert(id: "preview", kind: .done, title: "my-app", meta: "Finished · took 12 min")
+        }
+        Peek.close()
+        _ = Peek.show(alert, percent: nil)
+    }
+}
+
 enum Retention {
     static let presets = [7, 14, 30]
     static func choices(current: Int) -> [Int] { presets.contains(current) ? presets : (presets + [current]).sorted() }
@@ -327,7 +365,7 @@ enum BarStyle: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .closest: return "Closest limit · waiting count"
+        case .closest: return "Closest limit"
         case .withSessions: return "Closest limit · running sessions"
         case .ringOnly: return "Ring only"
         }

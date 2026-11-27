@@ -62,6 +62,9 @@ struct PeekAlert {
     var lines: [String] = []
     var percent: Double?
     var actions: [Action] = []
+    var celebrate = true
+    var seconds: Double?
+    var lifetime: Double? { seconds ?? kind.seconds }
 }
 
 enum PeekPlacement: String, CaseIterable {
@@ -82,6 +85,7 @@ final class PeekState {
     enum Shape: Equatable { case notch(width: CGFloat, height: CGFloat), icon, top }
     var alert: PeekAlert?
     var shape = Shape.icon
+    var wide = false
     var open = false
     var progress = 1.0
     var doneText: String?
@@ -97,6 +101,7 @@ enum Peek {
     private static var queue: [PeekAlert] = []
     private static var countdown: Task<Void, Never>?
     private static var monitors: [Any] = []
+    private static var closing = false
 
     /// Shows the alert and returns true, or returns false when it should go out as a macOS notification instead.
     static func show(_ alert: PeekAlert, percent: Double?) -> Bool {
@@ -119,16 +124,21 @@ enum Peek {
     }
 
     static func close() {
-        guard state.alert != nil else { return }
+        // Once: a second close mid-animation would also hide the alert queued behind this one.
+        guard state.alert != nil, !closing else { return }
+        closing = true
         countdown?.cancel()
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
-        withAnimation(.easeIn(duration: 0.2)) { state.open = false }
+        withAnimation(.easeIn(duration: 0.16)) { state.open = false }
         Task {
-            try? await Task.sleep(nanoseconds: 260_000_000)
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            withAnimation(.easeIn(duration: 0.12)) { state.wide = false }
+            try? await Task.sleep(nanoseconds: 160_000_000)
             panel?.orderOut(nil)
             state.alert = nil
             state.doneText = nil
+            closing = false
             if !queue.isEmpty { present(queue.removeFirst()) }
         }
     }
@@ -152,6 +162,7 @@ enum Peek {
         state.percent = alert.percent
         state.shape = place.0
         state.open = false
+        state.wide = false
         state.progress = 1
         state.doneText = nil
         resize(anchor: place)
@@ -159,8 +170,10 @@ enum Peek {
         NSSound(named: alert.kind.sound)?.play()
         NSAccessibility.post(element: panel, notification: .announcementRequested,
                              userInfo: [.announcement: "\(alert.kind.word). \(alert.title)", .priority: NSAccessibilityPriorityLevel.high.rawValue])
-        DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) { state.open = true }
+        Task {
+            withAnimation(.easeOut(duration: 0.14)) { state.wide = true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { state.open = true }
         }
         // Any click elsewhere closes it, like a menu. Questions stay in the dropdown.
         monitors = [NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in close() },
@@ -169,7 +182,7 @@ enum Peek {
                         return e
                     }].compactMap { $0 }
         countdown?.cancel()
-        if let seconds = alert.kind.seconds { countdown = Task { await run(seconds) } }
+        if let seconds = alert.lifetime { countdown = Task { await run(seconds) } }
     }
 
     // Hovering holds the timer, so an alert being read doesn't vanish.
@@ -286,7 +299,7 @@ private struct PeekView: View {
     @ViewBuilder private var reveal: some View {
         if case .notch(let w, let h) = state.shape, !reduceMotion {
             UnevenRoundedRectangle(cornerRadii: .init(topLeading: 0, bottomLeading: state.open ? 26 : 12, bottomTrailing: state.open ? 26 : 12, topTrailing: 0))
-                .frame(width: state.open ? Peek.width : w, height: state.open ? 2000 : h)
+                .frame(width: state.wide ? Peek.width : w, height: state.open ? 2000 : h)
         } else {
             Rectangle()
         }
@@ -302,10 +315,10 @@ private struct PeekView: View {
     }
 
     @ViewBuilder private func content(_ a: PeekAlert) -> some View {
-        let color = Dot.color(a.kind.mood, percent: state.percent)
+        let color = Dot.moodColor(a.kind.mood)
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 12) {
-                Dot(mood: a.kind.mood, percent: state.percent, size: 56)
+                Dot(mood: a.kind.mood, percent: state.percent, size: 56, celebrate: a.celebrate)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(a.kind.word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.8).foregroundStyle(color)
                     Text(a.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(3)
@@ -336,14 +349,15 @@ private struct PeekView: View {
                 HStack(spacing: 8) {
                     ForEach(Array(a.actions.enumerated()), id: \.offset) { _, action in
                         Button(action.title) {
-                            action.run()
+                            // The confirmation shows first: answering dismisses this alert, unless it's confirming.
                             Peek.finish(action.done)
+                            action.run()
                         }
                         .buttonStyle(PeekButton(style: action.style))
                     }
                 }
             }
-            if a.kind.seconds != nil, state.doneText == nil {
+            if a.lifetime != nil, state.doneText == nil {
                 GeometryReader { g in
                     Capsule().fill(Color(white: 0.35)).frame(width: g.size.width * state.progress)
                 }

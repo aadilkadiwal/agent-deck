@@ -52,7 +52,7 @@ struct DetailsView: View {
                     Section("Projects") {
                         let shown = allProjects ? projects : projects.enumerated().filter { $0.offset < Projects.shown || $0.element.folder == project }.map(\.element)
                         ForEach(shown) { p in
-                            sidebarRow(.project(p.folder), Fmt.folderName(p.folder), "folder",
+                            sidebarRow(.project(p.folder), Fmt.folderTitle(p.folder), "folder",
                                        trailing: "\(p.count)", dot: p.waiting)
                                 .help(Fmt.shortPath(p.folder))
                         }
@@ -64,6 +64,7 @@ struct DetailsView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top) { sidebarHeader }
             .safeAreaInset(edge: .bottom) { sidebarFooter }
             .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
         } detail: {
@@ -114,12 +115,27 @@ struct DetailsView: View {
     }
 
     private var title: String {
-        if let project { return Fmt.folderName(project) }
+        if let project { return Fmt.folderTitle(project) }
         switch current {
         case .sessions: return "Sessions"
         case .waiting: return "Waiting for you"
         case .usage: return "Usage"
         }
+    }
+
+    private var sidebarHeader: some View {
+        let running = model.live.filter { !$0.isLeftover }.count
+        return HStack(spacing: 10) {
+            Dot(mood: model.mood(for: model.closestWindow), percent: model.shownPercent, size: 32, celebrate: false)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(running == 0 ? "Nothing running" : "\(running) running").font(.callout.weight(.semibold))
+                Text(waitingCount == 0 ? "Nothing waiting" : "\(waitingCount) waiting for you")
+                    .font(.subheadline).foregroundStyle(waitingCount == 0 ? Color.secondary : .orange)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private var sidebarFooter: some View {
@@ -200,7 +216,7 @@ struct SessionRow: Identifiable {
     var model: String { Fmt.model(saved?.model) }
     var branch: String { liveBranch ?? saved?.branch ?? "" }
     var duration: TimeInterval? { saved?.duration }
-    var durationSort: Double { duration ?? -1 }
+    var durationSort: Double { live.map { Date().timeIntervalSince($0.startedAt) } ?? duration ?? -1 }
     var lastPrompt: String? { saved?.lastPrompt.flatMap { $0.isEmpty ? nil : $0 } }
     var promptLine: String? { lastPrompt.flatMap { $0.hasPrefix(name) ? nil : $0 } }
     var isClosed: Bool { live == nil }
@@ -211,7 +227,7 @@ struct SessionRow: Identifiable {
     }
     var statusColor: Color {
         guard let s = live, !s.isLeftover else { return .secondary }
-        switch s.state { case .busy: return .green; case .idle: return .secondary; case .blocked: return .orange }
+        switch s.state { case .busy: return .blue; case .idle: return .secondary; case .blocked: return .orange }
     }
 }
 
@@ -232,12 +248,17 @@ enum SessionFilter: String, CaseIterable, Identifiable {
 struct StatusPill: View {
     let row: SessionRow
     var body: some View {
-        Text(row.status)
-            .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(Capsule().fill(row.statusColor.opacity(0.18)))
-            .foregroundStyle(row.isClosed ? Color.secondary : Color.primary)
-            .accessibilityLabel("Status: \(row.status)")
+        Group {
+            if row.isClosed {
+                Text(row.status).foregroundStyle(.tertiary)
+            } else {
+                Text(row.status)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Capsule().fill(row.statusColor.opacity(0.18)))
+            }
+        }
+        .font(.subheadline.weight(.medium))
+        .accessibilityLabel("Status: \(row.status)")
     }
 }
 
@@ -280,11 +301,17 @@ struct SessionsTab: View {
         let rows = visible(all)
         let selectedRow = selection.count == 1 ? all.first { selection.contains($0.id) } : nil
         VStack(alignment: .leading, spacing: 10) {
-            if !waitingOnly { controls(all) }
-            if waitingOnly && !model.approvals.isEmpty { cards }
-            table(rows, all: all)
-                .frame(minHeight: waitingOnly && !model.approvals.isEmpty ? 120 : nil)
-                .overlay { if rows.isEmpty { emptyState } }
+            if waitingOnly {
+                let carded = Set(model.approvals.map(\.sessionId))
+                let uncarded = rows.filter { !carded.contains($0.id) }
+                if !model.approvals.isEmpty { cards }
+                if !uncarded.isEmpty { table(uncarded, all: all).frame(minHeight: 120) }
+                if model.approvals.isEmpty && uncarded.isEmpty { emptyState }
+            } else {
+                controls(all)
+                table(rows, all: all)
+                    .overlay { if rows.isEmpty { emptyState } }
+            }
         }
         .padding(12)
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -309,15 +336,15 @@ struct SessionsTab: View {
     }
 
     private var cards: some View {
-        let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
-        return ScrollView {
-            VStack(spacing: 10) {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
                 ForEach(model.approvals) {
-                    ApprovalCard(model: model, request: $0, hotkeyTarget: $0.id == hotkeyTarget, roomy: true)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    ApprovalCard(model: model, request: $0, roomy: true)
+                        .transition(ApprovalCard.transition(model.outcomes[$0.id], reduced: reduceMotion))
                 }
             }
             .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
+            HotkeyHint(model: model).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
         }
         .layoutPriority(1)
     }
@@ -372,22 +399,27 @@ struct SessionsTab: View {
                 }
                 .help(r.lastPrompt.map { "Last prompt: \($0)" } ?? r.name)
             }
-            .width(min: 180, ideal: 280)
+            .width(min: 160, ideal: 200)
             .customizationID("name")
             .disabledCustomizationBehavior(.visibility)
             TableColumn("Folder", value: \.folder) { r in Text(highlighted(Fmt.shortPath(r.folder), search)).lineLimit(1).help(r.folder) }
-                .width(min: 110, ideal: 150)
+                .width(min: 100, ideal: 120)
                 .customizationID("folder")
             TableColumn("Branch", value: \.branch) { r in
                 Text(r.branch.isEmpty ? "—" : r.branch).lineLimit(1).truncationMode(.middle).foregroundStyle(r.branch.isEmpty ? .tertiary : .primary)
             }
-            .width(min: 70, ideal: 110)
+            .width(min: 70, ideal: 100)
             .customizationID("branch")
-            TableColumn("Duration", value: \.durationSort) { r in
-                Text(r.duration.map(Fmt.duration) ?? "—").monospacedDigit().foregroundStyle(r.duration == nil ? .tertiary : .primary)
-                    .help("From the first message to the last")
+            TableColumn("Time", value: \.durationSort) { r in
+                if let s = r.live {
+                    Text("running \(Fmt.span(Date().timeIntervalSince(s.startedAt)))").monospacedDigit()
+                        .help("Open since \(Fmt.clock(s.startedAt))")
+                } else {
+                    Text(r.duration.map(Fmt.duration) ?? "—").monospacedDigit().foregroundStyle(r.duration == nil ? .tertiary : .primary)
+                        .help("How long it ran, from the first message to the last")
+                }
             }
-            .width(min: 60, ideal: 76)
+            .width(min: 96, ideal: 108)
             .customizationID("duration")
             TableColumn("Session ID") { r in Text(r.shortId).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary) }
                 .width(80)
@@ -398,7 +430,10 @@ struct SessionsTab: View {
                 .defaultVisibility(.hidden)
             TableColumn("Last active", value: \.lastActive) { r in Text(Fmt.ago(r.lastActive)) }.width(min: 80, ideal: 90)
                 .customizationID("lastActive")
-            TableColumn("Size", value: \.bytes) { r in Text(Fmt.bytes(r.bytes)).monospacedDigit() }.width(64)
+            TableColumn("Size", value: \.bytes) { r in
+                Text(Fmt.bytes(r.bytes)).monospacedDigit().lineLimit(1).frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .width(min: 70, ideal: 76)
                 .customizationID("size")
             TableColumn("") { r in
                 if r.isClosed, let h = r.saved {
@@ -439,8 +474,15 @@ struct SessionsTab: View {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
             ContentUnavailableView.search(text: search)
         } else if waitingOnly {
-            ContentUnavailableView("Nothing is waiting for you", systemImage: "checkmark.circle",
-                                   description: Text("Sessions that ask for permission, a plan or an answer show up here."))
+            ContentUnavailableView {
+                VStack(spacing: 10) {
+                    Dot(mood: .back, percent: model.shownPercent, size: 64, extras: false)
+                    Text("Nothing is waiting for you")
+                }
+            } description: {
+                Text("Prompts, questions and plans show up here as cards you can answer, the same ones as in the menu.")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView {
                 Label("No sessions", systemImage: "tray")
@@ -746,20 +788,12 @@ struct UsageTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let u = model.usage {
-                    HStack(alignment: .top, spacing: 28) {
-                        ForEach(Array(u.windows.enumerated()), id: \.element.id) { i, w in
-                            VStack(spacing: 8) {
-                                Ring(percent: w.percent(), size: 84, line: 9, delay: Double(i) * 0.08)
-                                Text(w.label).font(.body.weight(.semibold))
-                                Text(Fmt.resets(w.resetsAt)).font(.subheadline).foregroundStyle(.secondary)
-                                let forecast = model.forecast(w)
-                                if let f = Fmt.forecast(forecast) {
-                                    Text(f).font(.subheadline.weight(.medium)).multilineTextAlignment(.center)
-                                        .foregroundStyle(forecast == .safeUntilReset ? Color.secondary : Color.orange)
-                                }
-                            }
-                            .frame(width: 140)
+                    HStack(alignment: .center, spacing: 16) {
+                        Dot(mood: model.mood(for: model.closestWindow), percent: model.shownPercent, size: 44, celebrate: false)
+                        VStack(spacing: 6) {
+                            ForEach(u.windows) { w in Meter(window: w, forecast: model.forecast(w)).font(.callout) }
                         }
+                        .frame(maxWidth: 460)
                         Spacer(minLength: 0)
                     }
 
@@ -861,7 +895,7 @@ struct ProjectUsageView: View {
     private func bar(_ e: ProjectUsage.Entry, share: Double) -> some View {
         Button { pick(e.folder) } label: {
             HStack(spacing: 10) {
-                Text(Fmt.folderName(e.folder)).lineLimit(1).truncationMode(.middle)
+                Text(Fmt.folderTitle(e.folder)).lineLimit(1).truncationMode(.middle)
                     .frame(width: 150, alignment: .leading)
                 GeometryReader { g in
                     RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.75))
@@ -877,7 +911,7 @@ struct ProjectUsageView: View {
         }
         .buttonStyle(PressableStyle())
         .help("Show sessions in \(Fmt.shortPath(e.folder))")
-        .accessibilityLabel("\(Fmt.folderName(e.folder)), \(Fmt.tokens(e.tokens)) tokens")
+        .accessibilityLabel("\(Fmt.folderTitle(e.folder)), \(Fmt.tokens(e.tokens)) tokens")
     }
 }
 
@@ -893,7 +927,22 @@ struct UsageChart: View {
     struct Point: Identifiable {
         let at: Date
         let percent: Double
-        var id: Date { at }
+        var segment = 0
+        var id: String { "\(segment)-\(at.timeIntervalSince1970)" }
+    }
+
+    /// Splits the line at each reset and carries each piece up to its reset, so a reset reads as a break, not a drop.
+    static func segments(_ points: [Point], resets: [Date]) -> [Point] {
+        var out: [Point] = []
+        var seg = 0
+        for p in points {
+            while seg < resets.count, p.at >= resets[seg] {
+                if let last = out.last, last.segment == seg { out.append(Point(at: resets[seg], percent: last.percent, segment: seg)) }
+                seg += 1
+            }
+            out.append(Point(at: p.at, percent: p.percent, segment: seg))
+        }
+        return out
     }
 
     var body: some View {
@@ -903,6 +952,7 @@ struct UsageChart: View {
         // Carry the latest value up to now (readings are only logged when they change).
         if let w = window, !points.isEmpty { points.append(Point(at: now, percent: w.percent(at: now))) }
         let resets = Set(samples.filter { $0.key == key }.compactMap(\.resetsAt)).filter { $0 > start && $0 <= now }.sorted()
+        let pieces = Self.segments(points, resets: resets)
         let eta: Date? = if case .reachesLimit(let at) = forecast, at > now { at } else { nil }
 
         return Group {
@@ -915,14 +965,15 @@ struct UsageChart: View {
                     RuleMark(y: .value("Alert", Notifier.warnAt)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                         .annotation(position: .top, alignment: .leading) { Text("Warn at \(Int(Notifier.warnAt))%").font(.subheadline).foregroundStyle(.secondary) }
                     ForEach(resets, id: \.self) { r in
-                        RuleMark(x: .value("Reset", r)).foregroundStyle(.secondary.opacity(0.3))
-                            .annotation(position: .top) { Text("reset").font(.subheadline).foregroundStyle(.secondary) }
+                        RuleMark(x: .value("Reset", r)).foregroundStyle(Color.gray.opacity(0.45))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                            .annotation(position: .top, spacing: 2) { Text("reset").font(.caption).foregroundStyle(.tertiary) }
                     }
-                    ForEach(points) { p in
-                        AreaMark(x: .value("Time", p.at), y: .value("Used", p.percent))
+                    ForEach(pieces) { p in
+                        AreaMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(Color.accentColor.opacity(0.12))
-                        LineMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used"))
+                        LineMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
                             .interpolationMethod(.stepEnd)
                             .foregroundStyle(Color.accentColor)
                             .lineStyle(StrokeStyle(lineWidth: 2))
@@ -941,12 +992,17 @@ struct UsageChart: View {
                     }
                 }
                 .chartYScale(domain: 0...100)
-                .chartXScale(domain: start...max(now, eta ?? now))
+                .chartXScale(domain: start...max(now, eta ?? now), range: .plotDimension(startPadding: 0, endPadding: 28))
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: span > 86400 ? .dateTime.weekday(.abbreviated).day() : .dateTime.hour().minute())
+                } }
                 .chartYAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { v in
                     AxisGridLine()
                     AxisValueLabel { if let n = v.as(Int.self) { Text("\(n)%") } }
                 } }
-                .frame(height: 220)
+                .padding(.top, 10)
+                .frame(height: 230)
                 .mask {
                     GeometryReader { g in
                         Rectangle().frame(width: revealed ? g.size.width : 0).frame(maxWidth: .infinity, alignment: .leading)
