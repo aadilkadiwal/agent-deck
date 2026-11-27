@@ -55,7 +55,7 @@ struct ApprovalCard: View {
                         .lineLimit(1).fixedSize()
                 }
                 .frame(minWidth: 34, alignment: .trailing)
-                IconButton(symbol: "terminal", help: "Show it in the terminal instead") { model.openSession(id: request.sessionId) }
+                IconButton(symbol: "terminal", help: "Answer in the terminal") { model.openSession(id: request.sessionId) }
                     .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -65,7 +65,7 @@ struct ApprovalCard: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .help(risk.map { "This command \($0). It can't be allowed with ⌃⌥A or ⌘⏎; click Allow once if you mean it." } ?? request.cwd)
+            .help(risk.map { "This one \($0), so shortcuts won't allow it. Click Allow once if you're sure." } ?? request.cwd)
             if let d = request.description, request.kind == .permission {
                 Text(d).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -118,7 +118,7 @@ struct ApprovalCard: View {
     private func outcomeView(_ o: ApprovalAnswer) -> some View {
         let (text, symbol, color): (String, String, Color) = switch o {
         case .deny: ("Denied", "xmark.circle.fill", .red)
-        case .denyWith: ("Denied, reason sent", "xmark.circle.fill", .red)
+        case .denyWith: ("Denied, with your reason", "xmark.circle.fill", .red)
         case .answers: ("Answer sent", "checkmark.circle.fill", .green)
         case .allow(let always): (request.kind == .plan ? "Plan approved" : always ? "Always allowed" : "Allowed", "checkmark.circle.fill", .green)
         case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
@@ -197,11 +197,11 @@ struct ApprovalCard: View {
     private var riskyButtons: some View {
         HStack {
             Button("Allow once") { model.answer(request.id, .allow(always: false)) }
-                .help("Allow this one command. Always allow isn't offered for risky commands.")
+                .help("Allows just this run. Risky commands can't be always allowed.")
             Spacer()
             Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
                 .buttonStyle(.borderedProminent).tint(.red)
-                .help("Deny, and optionally tell Claude why")
+                .help("Deny it, and tell Claude why if you like")
         }
     }
 
@@ -209,16 +209,16 @@ struct ApprovalCard: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
-                    .help("Deny, and optionally tell Claude why")
+                    .help("Deny it, and tell Claude why if you like")
                 Spacer()
                 if let rule = request.alwaysLabel {
                     Button("Always allow") { model.answer(request.id, .allow(always: true)) }
-                        .help("Allows it now and saves \(rule), so Claude Code stops asking for it in this project")
+                        .help("Allows it now and remembers \(rule), so Claude stops asking in this project")
                 }
                 Button("Allow") { model.answer(request.id, .allow(always: false)) }.buttonStyle(.borderedProminent)
             }
             if let rule = request.alwaysLabel {
-                Text("Always allow saves \(rule)").font(.subheadline).foregroundStyle(.secondary)
+                Text("Always allow remembers \(rule)").font(.subheadline).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(rule)
             }
         }
@@ -228,7 +228,7 @@ struct ApprovalCard: View {
         HStack {
             Spacer()
             Button("Approve, auto-accept edits") { model.approvePlan(request, acceptEdits: true) }
-                .help("Approve, and let Claude make file edits in this session without asking")
+                .help("Approves the plan and lets Claude edit files in this session without asking")
             Button("Approve plan") { model.approvePlan(request, acceptEdits: false) }.buttonStyle(.borderedProminent)
         }
     }
@@ -239,8 +239,8 @@ struct HotkeyHint: View {
 
     var body: some View {
         if let r = model.pendingApprovals.first(where: { $0.kind == .permission }) {
-            Text(r.risk == nil ? "⌃⌥A allow · ⌃⌥D deny the oldest prompt, from any app"
-                               : "⌃⌥D denies the oldest prompt from any app · it's risky, so Allow needs a click")
+            Text(r.risk == nil ? "From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it"
+                               : "From any app, ⌃⌥D denies the oldest prompt. It's risky, so allowing it takes a click.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

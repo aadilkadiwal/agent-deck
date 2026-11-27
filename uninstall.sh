@@ -46,4 +46,7 @@ elif grep -qs 'agent-deck/hook.py' "$SETTINGS"; then
   exit 1
 fi
 rm -rf "$DATA_DIR"
+# The local signing certificate from install (its own keychain; this also takes it off the search list).
+KC="$HOME/Library/Keychains/agent-deck-signing.keychain-db"
+[ -f "$KC" ] && security delete-keychain "$KC" 2>/dev/null || true
 echo "✓ Agent Deck data removed (your Claude Code sessions are untouched)"

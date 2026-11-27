@@ -12,14 +12,17 @@ struct Dot: View {
     var extras = true
     var fps: Double = 30
     var celebrate = true
+    /// The menu bar: every frame there makes macOS re-snapshot the status item, so it holds still frames.
+    var still = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var since = Date()
 
     var body: some View {
         Group {
             // Idle only blinks, so it draws frames during a blink and holds a still frame in between.
-            if mood == .idle && !reduceMotion {
-                TimelineView(BlinkSchedule(fps: fps)) { tl in face(tl.date) }
+            // A still Dot does the same in every mood, plus a short burst after a mood change for its reaction.
+            if (mood == .idle || still) && !reduceMotion {
+                TimelineView(BlinkSchedule(fps: fps, burst: still ? since : nil)) { tl in face(tl.date) }
             } else {
                 TimelineView(.animation(minimumInterval: 1 / fps, paused: reduceMotion)) { tl in face(tl.date) }
             }
@@ -33,12 +36,12 @@ struct Dot: View {
         Canvas { ctx, sz in
             let t = reduceMotion ? 0 : date.timeIntervalSinceReferenceDate
             let sinceChange = reduceMotion ? 60 : date.timeIntervalSince(since)
-            DotFace(mood: mood, percent: percent, extras: extras, celebrate: celebrate).draw(&ctx, sz, t: t, sinceChange: sinceChange)
+            DotFace(mood: mood, percent: percent, extras: extras, celebrate: celebrate, still: still).draw(&ctx, sz, t: t, sinceChange: sinceChange)
         }
     }
 
     @MainActor static func png(mood: DotMood, percent: Double?, size: CGFloat = 120) -> Data? {
-        let view = Canvas { ctx, sz in DotFace(mood: mood, percent: percent, extras: true, celebrate: true).draw(&ctx, sz, t: 0, sinceChange: 60) }
+        let view = Canvas { ctx, sz in DotFace(mood: mood, percent: percent, extras: true, celebrate: true, still: true).draw(&ctx, sz, t: 0, sinceChange: 60) }
             .frame(width: size, height: size)
             .padding(size * 0.12)
             .background(Color(white: 0.1), in: RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
@@ -93,15 +96,23 @@ enum DotBlink {
 /// Frames only while a blink runs, and one to reopen the eyes: a still Dot costs nothing between blinks.
 struct BlinkSchedule: TimelineSchedule {
     let fps: Double
+    var burst: Date?
 
     func entries(from start: Date, mode: Mode) -> AnySequence<Date> {
         let t0 = start.timeIntervalSinceReferenceDate
         var k = floor(t0 / DotBlink.slot)
         var queue = [t0]
+        // The reaction after a mood change lasts up to 2.6 s; its frames merge into the blink frames in time order.
+        var extra = burst.map { b in Array(stride(from: b.timeIntervalSinceReferenceDate, through: b.timeIntervalSinceReferenceDate + 2.7, by: 1 / fps)).filter { $0 > t0 } } ?? []
         return AnySequence(AnyIterator {
             while queue.isEmpty {
                 queue = DotBlink.starts(k).flatMap { b in Array(stride(from: b, through: b + DotBlink.length + 0.1, by: 1 / fps)) }.filter { $0 > t0 }
                 k += 1
+            }
+            if let e = extra.first, e <= queue[0] {
+                extra.removeFirst()
+                if e == queue[0] { queue.removeFirst() }
+                return Date(timeIntervalSinceReferenceDate: e)
             }
             return Date(timeIntervalSinceReferenceDate: queue.removeFirst())
         })
@@ -114,6 +125,7 @@ private struct DotFace {
     let percent: Double?
     let extras: Bool
     let celebrate: Bool
+    let still: Bool
 
     private let eye = Color(red: 0.95, green: 0.96, blue: 0.98)
     private let ink = Color(red: 0.05, green: 0.06, blue: 0.08)
@@ -138,7 +150,7 @@ private struct DotFace {
             body.stroke(arc(from: 0, to: fraction), with: .color(rim), style: StrokeStyle(lineWidth: 8, lineCap: .round))
         }
         if mood == .working {
-            let start = (t / Motion.pulse).truncatingRemainder(dividingBy: 1)
+            let start = still ? 0.05 : (t / Motion.pulse).truncatingRemainder(dividingBy: 1)
             body.stroke(arc(from: start, to: start + 0.22), with: .color(.blue), style: StrokeStyle(lineWidth: 8, lineCap: .round))
         }
         body.fill(Path(ellipseIn: CGRect(x: 16, y: 16, width: 88, height: 88)),

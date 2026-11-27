@@ -56,7 +56,7 @@ public struct ClaudeCLI: Sendable {
         public var errorDescription: String? {
             switch self {
             case .untrusted(let f):
-                return "\((f as NSString).lastPathComponent) isn't a trusted folder yet. Open it once in iTerm and accept the trust prompt, then try again."
+                return "Claude Code doesn't trust \((f as NSString).lastPathComponent) yet. Open it once in iTerm, accept the prompt, then try again."
             case .failed(let msg): return msg
             }
         }
@@ -108,7 +108,7 @@ public struct ClaudeCLI: Sendable {
     /// Terminal sessions get SIGTERM, the same clean shutdown as closing the tab. Only sent when the
     /// pid file still names this exact session, so a recycled pid can never hit some other process.
     func signalInteractive(_ s: LiveSession) async throws {
-        guard let pid = s.pid else { throw Failure.failed("No process id for this session.") }
+        guard let pid = s.pid else { throw Failure.failed("Can't find this session's process.") }
         let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
         var live = pidFile(pid)
         // Caught mid-write (exists but doesn't parse yet): read it once more before deciding.
@@ -143,16 +143,16 @@ public struct ClaudeCLI: Sendable {
         try await typeCommand("/remote-control", into: win, session: s)
         if on {
             guard await waitForPhone(pid: pid, on: true, timeout: 15) else {
-                throw Failure.failed("Remote control didn't start. Check the session's window.")
+                throw Failure.failed("The phone connection didn't start. Have a look at the session's window.")
             }
         } else {
             // When it's already on, the command opens a menu: Disconnect sits two rows above the default.
             guard await waitFor(timeout: 5, { (try? win.screen())?.contains("Disconnect this session") == true }) else {
-                throw Failure.failed("The remote control menu didn't open. Check the session's window.")
+                throw Failure.failed("The phone menu didn't open. Have a look at the session's window.")
             }
             try win.chooseAbove(2)
             guard await waitForPhone(pid: pid, on: false, timeout: 8) else {
-                throw Failure.failed("Couldn't confirm the disconnect. Check the session's window.")
+                throw Failure.failed("Couldn't tell whether the phone disconnected. Have a look at the session's window.")
             }
         }
     }
@@ -173,7 +173,7 @@ public struct ClaudeCLI: Sendable {
         try await typeCommand("/clear", into: win, session: s)
         // An unreadable file (mid-write) proves nothing either way, so it counts as "not yet".
         guard await waitFor(timeout: 8, { pidFile(pid).map { $0.sessionId != s.sessionId } ?? false }) else {
-            throw Failure.failed("Couldn't confirm the clear. Check the session's window.")
+            throw Failure.failed("Couldn't tell whether it started fresh. Have a look at the session's window.")
         }
     }
 
@@ -223,7 +223,7 @@ public struct ClaudeCLI: Sendable {
                 confirmed = true
             }
         }
-        throw Failure.failed("\(s.name) didn't confirm the switch. Check its window.")
+        throw Failure.failed("\(s.name) didn't confirm the switch. Have a look at its window.")
     }
 
     @MainActor
@@ -231,7 +231,7 @@ public struct ClaudeCLI: Sendable {
         let (pid, win) = try typingTarget(s, busyOK: false)
         try await typeCommand("/resume \(id)", into: win, session: s)
         guard await waitFor(timeout: 10, { pidFile(pid)?.sessionId == id }) else {
-            throw Failure.failed("Couldn't confirm the conversation came back. Check the session's window.")
+            throw Failure.failed("Couldn't tell whether the conversation came back. Have a look at the session's window.")
         }
     }
 
@@ -249,8 +249,8 @@ public struct ClaudeCLI: Sendable {
     public static func typingBlocker(_ s: LiveSession, busyOK: Bool = true) -> String? {
         if s.kind == .background { return nil }   // handled by reopening in iTerm, not typing
         if s.state == .busy && !busyOK { return "Available when it's idle. It's working on a reply." }
-        if s.state == .blocked { return "Available after you answer its question." }
-        guard let pid = s.pid else { return "This session has no window." }
+        if s.state == .blocked { return "Answer its question first." }
+        guard let pid = s.pid else { return "It runs without a window." }
         switch owningApp(pid: pid)?.bundleIdentifier {
         case SessionWindow.itermBundleId: return nil
         case let other: return "Runs in \(other.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.deletingPathExtension().lastPathComponent } ?? "an app") that Agent Deck can't type into."
@@ -267,7 +267,7 @@ public struct ClaudeCLI: Sendable {
         try? await Task.sleep(nanoseconds: 500_000_000)
         guard SessionWindow.draft(in: try win.screen()) == command else {
             try win.erase(command.count)
-            throw Failure.failed("\(s.name) has unsent text in its prompt. Send or clear it, then try again.")
+            throw Failure.failed("\(s.name) has something typed but not sent. Send or clear it, then try again.")
         }
         let now = s.pid.flatMap(pidFile)
         if now?.state == .blocked {
