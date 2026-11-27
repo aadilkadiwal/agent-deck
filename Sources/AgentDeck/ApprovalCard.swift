@@ -52,15 +52,17 @@ struct ApprovalCard: View {
                 }
                 IconButton(symbol: "terminal", help: "Show it in the terminal instead") { model.openSession(id: request.sessionId) }
             }
-            HStack(spacing: 8) {
-                Image(systemName: icon).foregroundStyle(risk == nil ? Color.orange : Color.red)
-                    .symbolEffect(.bounce, value: arrived)
-                Text(title).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: icon).foregroundStyle(risk == nil ? Color.orange : Color.red)
+                        .symbolEffect(.bounce, value: arrived)
+                    Text(title).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 if let risk {
                     Text("RISKY · \(risk)")
-                        .font(.subheadline.weight(.bold)).foregroundStyle(.white).lineLimit(1)
-                        .padding(.horizontal, 8).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.red))
+                        .font(.subheadline.weight(.bold)).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.red))
                         .help("This command \(risk). It can't be allowed with ⌃⌥A or ⌘⏎; click Allow once if you mean it.")
                 }
             }
@@ -128,7 +130,7 @@ struct ApprovalCard: View {
         case .answers: ("Answer sent", "checkmark.circle.fill", .green)
         case .allow(let always): (request.kind == .plan ? "Plan approved" : always ? "Always allowed" : "Allowed", "checkmark.circle.fill", .green)
         case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
-        case .terminal: ("", "", .clear)
+        case .terminal: ("Answered in the terminal", "terminal.fill", .secondary)
         }
         return ZStack {
             RoundedRectangle(cornerRadius: Radius.row).fill(.background.opacity(0.88))
@@ -278,10 +280,11 @@ struct QuestionForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(questions, id: \.question) { q in
+            // Indexed: two questions (or options) can share the same text.
+            ForEach(Array(questions.enumerated()), id: \.offset) { _, q in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(q.question).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                    ForEach(q.options, id: \.label) { o in option(q, o) }
+                    ForEach(Array(q.options.enumerated()), id: \.offset) { _, o in option(q, o) }
                     TextField("Other…", text: Binding(get: { other[q.question] ?? "" }, set: { other[q.question] = $0 }))
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { if instant, !answer(q).isEmpty { send([q.question: answer(q)]) } }
@@ -290,7 +293,7 @@ struct QuestionForm: View {
             if !instant {
                 HStack {
                     Spacer()
-                    Button("Send") { send(Dictionary(uniqueKeysWithValues: questions.map { ($0.question, answer($0)) })) }
+                    Button("Send") { send(Dictionary(questions.map { ($0.question, answer($0)) }, uniquingKeysWith: { a, _ in a })) }
                         .buttonStyle(.borderedProminent)
                         .disabled(questions.contains { answer($0).isEmpty })
                 }

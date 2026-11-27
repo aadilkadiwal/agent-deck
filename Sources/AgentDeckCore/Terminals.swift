@@ -6,22 +6,35 @@ import Foundation
 enum Terminals {
     static let terminalBundleId = "com.apple.Terminal"
 
+    /// Blocks the main thread while tmux answers (at most a few seconds); prefer the async form.
     @MainActor
     static func focus(pid: Int32, cwd: String) -> Bool {
-        var tty = SessionWindow.tty(of: pid)
-        var hostPid = pid
+        let tty = SessionWindow.tty(of: pid)
+        return focus(pid: pid, tty: tty, tmux: tty.flatMap { selectTmuxPane(tty: $0) }, cwd: cwd)
+    }
+
+    @MainActor
+    static func focus(pid: Int32, cwd: String) async -> Bool {
+        let tty = SessionWindow.tty(of: pid)
+        let tmux = await Task.detached { tty.flatMap { selectTmuxPane(tty: $0) } }.value
+        return focus(pid: pid, tty: tty, tmux: tmux, cwd: cwd)
+    }
+
+    @MainActor
+    private static func focus(pid: Int32, tty: String?, tmux: (tty: String, pid: Int32)?, cwd: String) -> Bool {
         // Under tmux the session's parents lead to the tmux server, not to a terminal app.
-        if let paneTTY = tty, let client = selectTmuxPane(tty: paneTTY) { (tty, hostPid) = (client.tty, client.pid) }
+        let (tty, hostPid) = tmux.map { ($0.tty, $0.pid) } ?? (tty, pid)
         guard let app = ClaudeCLI.owningApp(pid: hostPid) else { return false }
         switch app.bundleIdentifier {
         case SessionWindow.itermBundleId:
             if let tty, (try? SessionWindow(tty: tty).focus()) != nil { return true }
         case terminalBundleId:
             if let tty, focusTerminalTab(tty: tty) { return true }
+        // Fire and forget: the pane switch doesn't need to finish before the app comes forward.
         case "net.kovidgoyal.kitty":
-            _ = run("kitty", ["@", "focus-window", "--match", "cwd:\(cwd)"], extra: ["/Applications/kitty.app/Contents/MacOS/kitty"])
+            DispatchQueue.global().async { _ = run("kitty", ["@", "focus-window", "--match", "cwd:\(cwd)"], extra: ["/Applications/kitty.app/Contents/MacOS/kitty"]) }
         case "com.github.wez.wezterm":
-            focusWezTermPane(cwd: cwd)
+            DispatchQueue.global().async { focusWezTermPane(cwd: cwd) }
         default: break
         }
         return app.activate()
@@ -73,14 +86,7 @@ enum Terminals {
     private static func run(_ tool: String, _ args: [String], extra: [String] = []) -> String? {
         let candidates = ["/opt/homebrew/bin/\(tool)", "/usr/local/bin/\(tool)", "/usr/bin/\(tool)"] + extra
         guard let exe = candidates.first(where: FileManager.default.isExecutableFile(atPath:)) else { return nil }
-        let p = Process(), out = Pipe()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = args
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
+        guard let r = try? Subprocess.run(URL(fileURLWithPath: exe), args, timeout: 3), !r.timedOut, r.status == 0 else { return nil }
+        return String(decoding: r.output, as: UTF8.self)
     }
 }

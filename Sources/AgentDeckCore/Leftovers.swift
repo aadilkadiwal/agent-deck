@@ -87,14 +87,9 @@ public enum Leftovers {
     }
 
     public static func gitTracks(_ url: URL) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p.arguments = ["-C", url.deletingLastPathComponent().path, "ls-files", "--error-unmatch", "--", url.lastPathComponent]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return false }
-        p.waitUntilExit()
-        return p.terminationStatus == 0
+        let args = ["-C", url.deletingLastPathComponent().path, "ls-files", "--error-unmatch", "--", url.lastPathComponent]
+        guard let r = try? Subprocess.run(URL(fileURLWithPath: "/usr/bin/git"), args, timeout: 5) else { return false }
+        return !r.timedOut && r.status == 0
     }
 
     /// Skips anything touched in the last day: a new session has leftovers before its transcript.

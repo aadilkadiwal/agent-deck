@@ -4,7 +4,6 @@ import SwiftUI
 
 struct MenuView: View {
     let model: AppModel
-    @Environment(\.openWindow) private var openWindow
     @State private var confirm: Confirm?
     @State private var showingNew = false
     @State private var search = ""
@@ -14,12 +13,15 @@ struct MenuView: View {
     @State private var previewing: String?
     @State private var cursor: Item?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var appeared = false
     @State private var usageHover = false
     @State private var hoveredRow: String?
     @State private var actionsOpen = false
     @State private var allClear = false
+    @State private var totalHeight: CGFloat = 0
+    @State private var needsYouHeight: CGFloat = 0
+    @State private var sessionsHeight: CGFloat = 0
     @AppStorage("onboarded") private var onboarded = false
+    @AppStorage(Notifier.Key.limits) private var notifyLimits = true
     @FocusState private var searchFocused: Bool
     @FocusState private var listFocused: Bool
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
@@ -47,14 +49,14 @@ struct MenuView: View {
     private var waitingRows: [LiveSession] {
         guard only == nil || only == .blocked else { return [] }
         let carded = Set(model.approvals.map(\.sessionId))
-        return model.live.filter { $0.state == .blocked && !$0.isLeftover && !carded.contains($0.sessionId) && matches(model.displayName($0), $0.cwd, $0.sessionId, model.lastPrompt($0.sessionId)) }
+        return model.live.filter { $0.state == .blocked && !$0.isLeftover && !carded.contains($0.sessionId) && matches($0) }
     }
     private var running: [LiveSession] {
         model.live.filter { s in
             let waiting = s.state == .blocked && !s.isLeftover
             guard !waiting else { return false }
             if let only { return s.state == only && !s.isLeftover }
-            return matches(model.displayName(s), s.cwd, s.sessionId, model.lastPrompt(s.sessionId))
+            return matches(s)
         }
     }
     private var closed: [HistorySession] {
@@ -63,7 +65,7 @@ struct MenuView: View {
         return searching ? Array(model.closed.filter { matches($0.name, $0.cwd, $0.sessionId, $0.lastPrompt ?? "") }.prefix(15))
                          : Array(model.closed.prefix(5))
     }
-    private var grouped: Bool { running.count > 5 && !searching && only == nil }
+    private func grouped(_ running: [LiveSession]) -> Bool { running.count > 5 && !searching && only == nil }
     // Not narrowed by search, so typing never makes waiting sessions look answered.
     private var urgent: Bool {
         guard only == nil || only == .blocked else { return false }
@@ -71,10 +73,11 @@ struct MenuView: View {
     }
     private var typing: Bool { NSApp.keyWindow?.firstResponder is NSText }
 
-    // The two lists scroll; everything else (header, usage, banner, footer, about 340 pt) doesn't, so
-    // the lists share what's left of the screen and the footer never ends up below it.
+    // The two lists scroll; everything else (header, usage, banners, footer) doesn't. Its height is
+    // measured, so the lists share what's left below the menu bar and the footer stays on screen.
     private var heights: (needsYou: CGFloat, sessions: CGFloat) {
-        let budget = max(240, (NSScreen.main?.visibleFrame.height ?? 900) - 340)
+        let fixed = totalHeight > 0 ? totalHeight - needsYouHeight - sessionsHeight : 340
+        let budget = max(240, StatusMenu.available - fixed)
         guard urgent else { return (0, min(380, budget)) }
         let needsYou = min(420, budget * 0.6)
         return (needsYou, max(120, min(240, budget - needsYou)))
@@ -82,7 +85,8 @@ struct MenuView: View {
 
     /// Everything ↑/↓ can reach, top to bottom, as it's drawn.
     private var items: [Item] {
-        let live: [LiveSession] = grouped
+        let running = self.running
+        let live: [LiveSession] = grouped(running)
             ? ProjectGroups.group(running).filter { !collapsed.contains($0.name) }.flatMap(\.sessions)
             : running
         return cards.filter { model.outcomes[$0.id] == nil }.map { .card($0.id) }
@@ -125,8 +129,9 @@ struct MenuView: View {
             .animation(Motion.spring(reduced: reduceMotion), value: allClear)
             .animation(Motion.spring(reduced: reduceMotion), value: showingNew)
             .animation(Motion.spring(reduced: reduceMotion), value: only)
-            .padding(8)
+            .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, 4)
             .frame(width: 370)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { totalHeight = $0 }
             .overlay(alignment: .top) {
                 if actionsOpen, let cursor {
                     ZStack(alignment: .top) {
@@ -154,14 +159,14 @@ struct MenuView: View {
             }
             .onKeyPress(.escape) {
                 if actionsOpen { withAnimation(Motion.fast(reduceMotion)) { actionsOpen = false }; return .handled }
+                if confirm != nil { confirm = nil; listFocused = true; return .handled }
+                if searching { search = ""; return .handled }
                 if previewing != nil { withAnimation(Motion.snappy(reduceMotion)) { previewing = nil }; return .handled }
                 if only != nil { only = nil; return .handled }
                 if cursor != nil { cursor = nil; return .handled }
-                return .ignored
+                StatusMenu.close()
+                return .handled
             }
-            .scaleEffect(appeared || reduceMotion ? 1 : 0.98, anchor: .top)
-            .offset(y: appeared || reduceMotion ? 0 : -4)
-            .opacity(appeared ? 1 : 0)
             .background {
                 // ⌘F: jump to search.
                 Button("") { showingNew = false; searchAsked = true; searchFocused = true }
@@ -170,29 +175,33 @@ struct MenuView: View {
                     .keyboardShortcut("r").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
                 Button("") { openActions() }
                     .keyboardShortcut("k").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
-                Button("") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
+                Button("") { settings() }
                     .keyboardShortcut(",").opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             }
             .onAppear {
                 model.menuOpen = true
                 listFocused = true
-                if let id = model.focusApproval ?? model.pendingApprovals.last?.id { cursor = .card(id) }
+                // Same card ⌃⌥A answers, so the outline and the hotkey hint agree.
+                let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
+                if let id = model.focusApproval ?? hotkeyTarget ?? model.pendingApprovals.last?.id { cursor = .card(id) }
                 model.focusApproval = nil
-                withAnimation(Motion.spring(reduced: reduceMotion)) { appeared = true }
             }
             .onDisappear {
-                model.menuOpen = false; search = ""; searchAsked = false; appeared = false
+                model.menuOpen = false; search = ""; searchAsked = false; confirm = nil; showingNew = false
                 only = nil; previewing = nil; cursor = nil; actionsOpen = false; allClear = false; hoveredRow = nil
             }
             .onChange(of: urgent) { was, now in
                 guard was, !now, model.menuOpen, only == nil, !showingNew, !searching else { return }
                 allClear = true
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_800_000_000)
-                    allClear = false
-                }
+            }
+            .task(id: allClear) {
+                guard allClear, (try? await Task.sleep(nanoseconds: 1_800_000_000)) != nil else { return }
+                allClear = false
             }
         }
+        // The panel follows a height change one pass later; until then the content stays under the menu bar
+        // instead of being centred in the old frame.
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func move(_ step: Int, _ proxy: ScrollViewProxy) {
@@ -321,6 +330,7 @@ struct MenuView: View {
 
     private var needsYou: some View {
         let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
+        let cards = self.cards, waitingRows = self.waitingRows
         return VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "NEEDS YOU · \(cards.count + waitingRows.count)", trailing: "or answer in the terminal")
             ScrollView {
@@ -340,6 +350,8 @@ struct MenuView: View {
             }
             .frame(maxHeight: heights.needsYou)
             .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { needsYouHeight = $0 }
+            .onDisappear { needsYouHeight = 0 }
         }
         .padding(.bottom, 8)
     }
@@ -362,17 +374,38 @@ struct MenuView: View {
             .buttonStyle(PressableStyle())
             .onHover { usageHover = $0 }
             .animation(Motion.fast(reduceMotion), value: usageHover)
-            .help(stale ? "These numbers are over 10 minutes old. They update with your next Claude Code message." : "Open usage details")
+            .help(stale ? "These numbers are over 10 minutes old. Agent Deck couldn't reach Anthropic; they update with your next Claude Code message." : "Open usage details")
             HStack {
-                Text(u.model ?? "")
+                Text(model.usageIsAccount ? "Whole account, every Mac on this login" : u.model ?? "")
                 Spacer()
                 Text("updated \(Fmt.ago(u.updatedAt))")
             }
             .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal, 8)
+            LastHourBar(model: model).padding(.horizontal, 8).padding(.top, 6)
+            if let w = [u.fiveHour, u.weekly].compactMap({ $0 }).first(where: { if case .reachesLimit = model.forecast($0) { true } else { false } }),
+               case .reachesLimit(let at) = model.forecast(w), !model.switchCandidates.isEmpty {
+                Callout(tint: .orange) {
+                    Text("\(w.label) runs out at \(Fmt.clock(at)). Sonnet uses less of it.").fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("Switch \(Fmt.count(model.switchCandidates.count, "idle session"))") { model.switchToSonnet() }
+                        .controlSize(.small)
+                        .help("Types /model sonnet into idle Opus sessions in iTerm")
+                }
+                .font(.subheadline).padding(.top, 6)
+            }
+            if model.notificationsOff && notifyLimits {
+                Button {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")")!)
+                } label: {
+                    Label("Notifications are off, so limit warnings won't show. Turn on", systemImage: "bell.slash")
+                        .font(.subheadline).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain).padding(.horizontal, 8)
+            }
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Usage limits").font(.body.weight(.semibold))
-                Text("They appear after your next Claude Code message. Claude Code sends them to the status line, and Agent Deck reads them from there.")
+                Text("They appear within a few minutes once you're signed in to Claude Code, or after your next Claude Code message.")
                     .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(8)
         }
@@ -387,7 +420,7 @@ struct MenuView: View {
                             .contentTransition(.numericText(value: l.percent))
                             .animation(Motion.spring(reduced: reduceMotion), value: l.percent)
                     }
-                    .help(Fmt.resets(l.resetsAt).capitalized)
+                    .help(Fmt.resetsTitle(l.resetsAt))
                     .accessibilityElement(children: .combine)
                 }
                 Spacer()
@@ -401,8 +434,12 @@ struct MenuView: View {
         return q.isEmpty || text.contains { $0.lowercased().contains(q) }
     }
 
+    private func matches(_ s: LiveSession) -> Bool {
+        !searching || matches(model.displayName(s), s.cwd, s.sessionId, model.lastPrompt(s.sessionId))
+    }
+
     private var sessions: some View {
-        let running = self.running, closed = self.closed
+        let running = self.running, closed = self.closed, isGrouped = grouped(running)
         return VStack(alignment: .leading, spacing: 4) {
             if showSearch {
                 TextField("Search name, folder, prompt or ID", text: $search)
@@ -425,7 +462,7 @@ struct MenuView: View {
                         }
                         .padding(8)
                     }
-                    if grouped {
+                    if isGrouped {
                         ForEach(ProjectGroups.group(running), id: \.name) { g in groupView(g) }
                     } else {
                         ForEach(running) { s in liveRow(s).transition(.opacity.combined(with: .move(edge: .top))) }
@@ -445,6 +482,8 @@ struct MenuView: View {
             }
             .frame(maxHeight: heights.sessions)
             .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sessionsHeight = $0 }
+            .onDisappear { sessionsHeight = 0 }
         }
         .animation(Motion.spring(reduced: reduceMotion), value: showSearch)
     }
@@ -505,9 +544,10 @@ struct MenuView: View {
                     }
                     Text(highlighted([Fmt.shortPath(s.cwd), model.branches[s.cwd].map { "⎇ \($0)" }].compactMap { $0 }.joined(separator: " "), search))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    if ActivityLine.isShown(s, model) { ActivityLine(model: model, session: s) }
+                    if model.isStoppedAtLimit(s) { LimitStopLine(model: model, session: s) }
+                    else if ActivityLine.isShown(s, model) { ActivityLine(model: model, session: s) }
                 }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .contain)
                 Spacer(minLength: 4)
                 if s.agent == .claude {
                     ZStack(alignment: .trailing) {
@@ -676,17 +716,17 @@ struct MenuView: View {
                                     : s.state == .blocked ? "It's waiting for an answer. Stop it?"
                                     : s.kind == .background && s.isOnPhone ? "It runs only on your phone. Stop it?"
                                     : s.isOnPhone ? "Stop it? It also leaves your phone." : "Stop this session?",
-                           confirmTitle: s.isLeftover ? "Clear" : "Stop", cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
+                           confirmTitle: s.isLeftover ? "Clear" : "Stop", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.stop(s) }
             case .stopIdle:
                 let idle = model.live.filter { $0.state == .idle && !$0.isLeftover && $0.agent == .claude }
                 ConfirmRow(message: "Stop \(Fmt.count(idle.count, "idle session"))? Each can be resumed from Recent.",
-                           confirmTitle: "Stop all", cancel: { confirm = nil }) { confirm = nil; idle.forEach(model.stop) }
+                           confirmTitle: "Stop all", destructive: true, cancel: { confirm = nil }) { confirm = nil; idle.forEach(model.stop) }
             case .compact(let s):
                 ConfirmRow(message: "Compact its context? Claude keeps a summary and drops the details. The full conversation stays in its transcript.",
-                           confirmTitle: "Compact", cancel: { confirm = nil }) { confirm = nil; model.compact(s) }
+                           confirmTitle: "Compact", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.compact(s) }
             case .clearContext(let s):
                 ConfirmRow(message: "Clear its context? It starts fresh in the same window. Undo brings this conversation back.",
-                           confirmTitle: "Clear", cancel: { confirm = nil }) { confirm = nil; model.clearContext(s) }
+                           confirmTitle: "Clear", destructive: true, cancel: { confirm = nil }) { confirm = nil; model.clearContext(s) }
             case .openWithPhone(let s):
                 ConfirmRow(message: "It has no window. Open it in iTerm with phone access on?",
                            confirmTitle: "Open", cancel: { confirm = nil }) { confirm = nil; model.phoneOn(s) }
@@ -721,7 +761,7 @@ struct MenuView: View {
                     .keyboardShortcut("n")
                 Spacer()
                 Button("View details…") { showDetails(tab: .sessions) }
-                IconButton(symbol: "gearshape", help: "Settings (⌘,)") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
+                IconButton(symbol: "gearshape", help: "Settings (⌘,)") { settings() }
                 IconButton(symbol: "power", help: "Quit Agent Deck") { NSApp.terminate(nil) }
             }
             .buttonStyle(.borderless)
@@ -818,8 +858,12 @@ struct MenuView: View {
     }
 
     private func showDetails(tab: DetailsTab) {
-        UserDefaults.standard.set(tab.rawValue, forKey: "detailsTab")
-        openWindow(id: "details")
+        model.showDetails?(tab)
+    }
+
+    private func settings() {
+        StatusMenu.close()
+        openSettings()
         NSApp.activate(ignoringOtherApps: true)
     }
 }
@@ -909,6 +953,7 @@ struct NewSessionPanel: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.prompt = "Choose"
+        panel.level = .popUpMenu   // the dropdown sits at this level; same level, ordered later, so it shows on top
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url { folder = url.path }
     }
@@ -999,7 +1044,7 @@ struct DeleteConfirm: View {
                 Button(picked.isEmpty ? "Delete" : "Delete + \(Fmt.count(picked.count, "file"))", role: .destructive) {
                     model.delete(sessions, files: Array(picked))
                     onDone()
-                }.keyboardShortcut(.defaultAction)
+                }
             }
             if !files.isEmpty {
                 DisclosureGroup(isExpanded: $showFiles) {
@@ -1153,7 +1198,7 @@ struct WelcomeCard: View {
                 Label("Select a row and press ⌘K to see everything you can do with it.", systemImage: "command")
                 Label("Pin keeps a small panel above your terminal while you work.", systemImage: "pin")
                 if menuHotkey != MenuHotkey.off.rawValue && model.menuHotkeyFailed {
-                    Label("⌃⌥O is already used by another app. Pick another shortcut in Settings → Shortcuts.",
+                    Label("\(MenuHotkey(rawValue: menuHotkey)?.title ?? "The shortcut") is already used by another app. Pick another shortcut in Settings → Shortcuts.",
                           systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
                 HStack(spacing: 8) {

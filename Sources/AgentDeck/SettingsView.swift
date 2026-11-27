@@ -24,6 +24,8 @@ struct SettingsView: View {
     @AppStorage(Notifier.Key.finished) private var notifyFinished = true
     @AppStorage(Notifier.Key.limits) private var notifyLimits = true
     @AppStorage(SettingsPage.key) private var page = SettingsPage.general.rawValue
+    @State private var warnAt = "\(Int(Notifier.warnAt))"
+    @FocusState private var warnFocused: Bool
     @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.off.rawValue
     @StateObject private var updater = Updater()
     @State private var cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
@@ -167,6 +169,13 @@ struct SettingsView: View {
                     Button("Check for updates") { updater.check() }.disabled(updater.busy)
                 }
             }
+            if !updater.incoming.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(updater.incoming.prefix(8).enumerated()), id: \.offset) { Text("• \($0.element)").lineLimit(1) }
+                    if updater.incoming.count > 8 { Text("and \(updater.incoming.count - 8) more") }
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+            }
         } header: { Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")") }
     }
 
@@ -174,11 +183,35 @@ struct SettingsView: View {
         Section {
             Toggle("A session is waiting for your answer", isOn: $notifyWaiting)
             Toggle("A session finishes a task that took over a minute", isOn: $notifyFinished)
-            Toggle("A usage limit passes 80% and 95%", isOn: $notifyLimits)
+            Toggle("A usage limit reaches your warning level, or is on pace to run out before it resets", isOn: $notifyLimits)
+            if notifyLimits {
+                LabeledContent("Warn at") {
+                    HStack(spacing: 4) {
+                        TextField("", text: $warnAt)
+                            .textFieldStyle(.roundedBorder).frame(width: 56).multilineTextAlignment(.trailing)
+                            .focused($warnFocused)
+                            .onSubmit(saveWarnAt)
+                            .onChange(of: warnFocused) { _, focused in if !focused { saveWarnAt() } }
+                        Text("%").foregroundStyle(.secondary)
+                    }
+                }
+            }
         } header: { Text("Notify me when") } footer: {
-            Text("If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
+            Text("Limits count everyone signed in to the same Claude account. Each Mac with Agent Deck warns on its own, even when nobody is using Claude on it. Warn at takes any level from 1 to 99%. If your notch app already announces sessions, switch the first two off here to avoid double alerts.")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
+    }
+
+    /// Saved on Return or leaving the field, not per keystroke: typing "50" mustn't warn at 5% on the way.
+    private func saveWarnAt() {
+        guard let v = Double(warnAt.trimmingCharacters(in: CharacterSet(charactersIn: " %"))), (1...99).contains(v) else {
+            warnAt = "\(Int(Notifier.warnAt))"   // not a level: put the saved one back
+            return
+        }
+        warnAt = "\(Int(v.rounded()))"
+        guard v.rounded() != Notifier.warnAt else { return }
+        UserDefaults.standard.set(v.rounded(), forKey: Notifier.Key.warnAt)
+        model.recheckLimits()   // a level below today's usage warns now, not at the next change
     }
 
     @ViewBuilder private var storage: some View {
@@ -237,6 +270,7 @@ struct SettingsView: View {
         Section {
             LabeledContent("Usage snapshot", value: FileManager.default.fileExists(atPath: model.paths.statusFile.path)
                            ? "received \(model.usage.map { Fmt.ago($0.updatedAt) } ?? "—")" : "not received yet")
+            LabeledContent("Account usage", value: model.accountStatusText)
             LabeledContent("claude command", value: model.cli?.executable.path ?? "not found")
         } header: { Text("Status") }
     }
@@ -275,7 +309,7 @@ struct StorageBar: View {
 
 enum Retention {
     static let presets = [7, 14, 30]
-    static func choices(current: Int) -> [Int] { presets.contains(current) || current > 30 ? presets : (presets + [current]).sorted() }
+    static func choices(current: Int) -> [Int] { presets.contains(current) ? presets : (presets + [current]).sorted() }
     static func label(_ d: Int) -> String { d == 7 ? "1 week" : d == 14 ? "2 weeks" : "\(d) days" }
 }
 

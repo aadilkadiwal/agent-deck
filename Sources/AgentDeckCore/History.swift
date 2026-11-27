@@ -64,6 +64,12 @@ public final class HistoryScanner: @unchecked Sendable {
         if size > Int64(chunk) {
             try? fh.seek(toOffset: UInt64(max(Int64(chunk), size - Int64(chunk))))
             tail = (try? fh.readToEnd()) ?? Data()
+            // Claude Code writes a 100 KB+ prompt snapshot after a reply, which can push every reply
+            // (and so the model and last-active time) out of the tail. Look further back then.
+            if size > 2 * Int64(chunk), tail.range(of: Data(#""type":"assistant""#.utf8)) == nil {
+                try? fh.seek(toOffset: UInt64(max(Int64(chunk), size - 2_000_000)))
+                tail = (try? fh.readToEnd()) ?? tail
+            }
         }
         return parse(chunks: [head, tail], sessionId: url.deletingPathExtension().lastPathComponent,
                      url: url, mtime: mtime, size: size, folderSlug: folderSlug)
@@ -92,6 +98,13 @@ public final class HistoryScanner: @unchecked Sendable {
                 case "last-prompt": prompt = (o["lastPrompt"] as? String) ?? prompt
                 case "assistant":
                     if let m = (o["message"] as? [String: Any])?["model"] as? String, m != "<synthetic>" { model = m }
+                case "user":
+                    // /model's reply ("Set model to `Sonnet 5.5`") counts before the next reply does.
+                    if let c = (o["message"] as? [String: Any])?["content"] as? String,
+                       let r = c.range(of: "<local-command-stdout>Set model to `"),
+                       let name = c[r.upperBound...].split(separator: "`").first {
+                        model = "claude-" + name.lowercased().replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: ".", with: "-")
+                    }
                 default: break
                 }
             }

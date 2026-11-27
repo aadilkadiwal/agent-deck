@@ -17,17 +17,13 @@ public struct ClaudeCLI: Sendable {
         if let hit = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
             return URL(fileURLWithPath: hit)
         }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", "command -v claude"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        try? p.run()
-        p.waitUntilExit()
-        let path = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+        // Interactive too (-i), so PATH set in .zshrc (nvm and the like) counts. Its startup can print
+        // other lines, so take the last one that is a path.
+        guard let r = try? Subprocess.run(URL(fileURLWithPath: "/bin/zsh"), ["-ilc", "command -v claude"], timeout: 5), !r.timedOut,
+              let path = String(decoding: r.output, as: UTF8.self).split(separator: "\n")
+                .map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { $0.hasPrefix("/") }),
+              FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     public enum Args {
@@ -73,45 +69,22 @@ public struct ClaudeCLI: Sendable {
     }
 
     @discardableResult
-    public func run(_ args: [String], cwd: String? = nil) async throws -> String {
-        let p = Process()
-        p.executableURL = executable
-        p.arguments = args
-        if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+    public func run(_ args: [String], cwd: String? = nil, timeout: TimeInterval = 60) async throws -> String {
         var env = Self.cleanEnvironment(ProcessInfo.processInfo.environment)
         env["PATH"] = "\(executable.deletingLastPathComponent().path):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        p.environment = env
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-        p.standardInput = FileHandle.nullDevice
-
-        // Finished = process exited AND its output is drained. Draining while it runs keeps a large
-        // output from filling the pipe; terminationHandler avoids waitUntilExit, which needs a run loop.
-        let done = DispatchGroup()
-        let buffer = OutputBuffer()
-        done.enter(); done.enter()
-        p.terminationHandler = { _ in done.leave() }
-        let output: String = try await withCheckedThrowingContinuation { cont in
-            do { try p.run() } catch {
-                cont.resume(throwing: Failure.failed("Couldn't run claude: \(error.localizedDescription)"))
-                return
-            }
-            DispatchQueue.global().async {
-                buffer.data = pipe.fileHandleForReading.readDataToEndOfFile()
-                done.leave()
-            }
-            done.notify(queue: .global()) { cont.resume(returning: String(decoding: buffer.data, as: UTF8.self)) }
+        let r: Subprocess.Output
+        do { r = try await Subprocess.run(executable, args, cwd: cwd, env: env, stderr: true, timeout: timeout) } catch {
+            throw Failure.failed("Couldn't run claude: \(error.localizedDescription)")
         }
+        if r.timedOut { throw Failure.failed("claude didn't finish within \(Int(timeout)) seconds.") }
+        let output = String(decoding: r.output, as: UTF8.self)
         if output.contains("Workspace not trusted") { throw Failure.untrusted(folder: cwd ?? "") }
-        if p.terminationStatus != 0 {
+        if r.status != 0 {
             let msg = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Failure.failed(msg.isEmpty ? "claude exited with code \(p.terminationStatus)" : msg)
+            throw Failure.failed(msg.isEmpty ? "claude exited with code \(r.status)" : msg)
         }
         return output
     }
-
-    private final class OutputBuffer: @unchecked Sendable { var data = Data() }
 
     public func listAgentsJSON() async -> Data? {
         guard let out = try? await run(Args.listAgents) else { return nil }
@@ -128,17 +101,25 @@ public struct ClaudeCLI: Sendable {
             }
             return
         }
-        try signalInteractive(s)
+        try await signalInteractive(s)
         _ = await waitUntilGone(s)
     }
 
     /// Terminal sessions get SIGTERM, the same clean shutdown as closing the tab. Only sent when the
     /// pid file still names this exact session, so a recycled pid can never hit some other process.
-    func signalInteractive(_ s: LiveSession) throws {
+    func signalInteractive(_ s: LiveSession) async throws {
         guard let pid = s.pid else { throw Failure.failed("No process id for this session.") }
         let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
-        guard let data = try? Data(contentsOf: file), let live = LiveSessions.parsePidFile(data),
-              live.sessionId == s.sessionId else { return } // already gone
+        var live = pidFile(pid)
+        // Caught mid-write (exists but doesn't parse yet): read it once more before deciding.
+        if live == nil, FileManager.default.fileExists(atPath: file.path) {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            live = pidFile(pid)
+            if live == nil, FileManager.default.fileExists(atPath: file.path) {
+                throw Failure.failed("Couldn't read process \(pid)'s session file. Try again.")
+            }
+        }
+        guard let live, live.sessionId == s.sessionId else { return } // already gone
         if kill(pid, SIGTERM) != 0 { throw Failure.failed("Couldn't stop process \(pid) (errno \(errno)).") }
     }
 
@@ -159,7 +140,7 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public func setPhone(_ s: LiveSession, on: Bool) async throws {
         let (pid, win) = try typingTarget(s, busyOK: true)
-        try typeCommand("/remote-control", into: win, session: s)
+        try await typeCommand("/remote-control", into: win, session: s)
         if on {
             guard await waitForPhone(pid: pid, on: true, timeout: 15) else {
                 throw Failure.failed("Remote control didn't start. Check the session's window.")
@@ -181,7 +162,7 @@ public struct ClaudeCLI: Sendable {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
         guard !title.isEmpty else { return }
         let (_, win) = try typingTarget(s, busyOK: true)
-        try typeCommand("/rename \(title)", into: win, session: s)
+        try await typeCommand("/rename \(title)", into: win, session: s)
     }
 
     /// /clear gives the session a new id, so a changed id in its pid file confirms it. Not while busy:
@@ -189,9 +170,9 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public func clear(_ s: LiveSession) async throws {
         let (pid, win) = try typingTarget(s, busyOK: false)
-        try typeCommand("/clear", into: win, session: s)
-        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
-        guard await waitFor(timeout: 8, { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.sessionId != s.sessionId }) else {
+        try await typeCommand("/clear", into: win, session: s)
+        // An unreadable file (mid-write) proves nothing either way, so it counts as "not yet".
+        guard await waitFor(timeout: 8, { pidFile(pid).map { $0.sessionId != s.sessionId } ?? false }) else {
             throw Failure.failed("Couldn't confirm the clear. Check the session's window.")
         }
     }
@@ -200,17 +181,56 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public func compact(_ s: LiveSession) async throws {
         let (pid, win) = try typingTarget(s, busyOK: false)
-        try typeCommand("/compact", into: win, session: s)
-        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
-        _ = await waitFor(timeout: 6) { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.state != .idle }
+        try await typeCommand("/compact", into: win, session: s)
+        _ = await waitFor(timeout: 6) { pidFile(pid).map { $0.state != .idle } ?? false }
+    }
+
+    @MainActor
+    public func send(_ line: String, to s: LiveSession) async throws {
+        let (_, win) = try typingTarget(s, busyOK: false)
+        try await typeCommand(line, into: win, session: s)
+    }
+
+    // `/model` in a conversation with replies first asks "Switch model?" with Yes picked, so Return
+    // confirms it. Done only once the transcript says "Set model to". Claude Code also saves the model
+    // as the default for new sessions; that is put back, so only these sessions switch.
+    @MainActor
+    public func switchModel(_ targets: [(LiveSession, transcript: URL)], to model: String) async -> [(LiveSession, Error)] {
+        let before = ClaudeSettings.model(paths)
+        var failed: [(LiveSession, Error)] = []
+        for (s, url) in targets {
+            do { try await switchModel(s, transcript: url, to: model) } catch { failed.append((s, error)) }
+        }
+        if ClaudeSettings.model(paths) != before { try? ClaudeSettings.setModel(before, paths) }
+        return failed
+    }
+
+    @MainActor
+    private func switchModel(_ s: LiveSession, transcript: URL, to model: String) async throws {
+        let (_, win) = try typingTarget(s, busyOK: false)
+        let start = (try? transcript.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        try await typeCommand("/model \(model)", into: win, session: s)
+        var confirmed = false
+        for _ in 0..<16 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if let h = try? FileHandle(forReadingFrom: transcript) {
+                defer { try? h.close() }
+                try? h.seek(toOffset: UInt64(start))
+                if let d = try? h.readToEnd(), d.range(of: Data("Set model to".utf8)) != nil { return }
+            }
+            if !confirmed, SessionWindow.draft(in: try win.screen())?.hasPrefix("1. Yes, switch") == true {
+                try win.type("", enter: true)
+                confirmed = true
+            }
+        }
+        throw Failure.failed("\(s.name) didn't confirm the switch. Check its window.")
     }
 
     @MainActor
     public func resumeHere(_ s: LiveSession, id: String) async throws {
         let (pid, win) = try typingTarget(s, busyOK: false)
-        try typeCommand("/resume \(id)", into: win, session: s)
-        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
-        guard await waitFor(timeout: 10, { (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)?.sessionId == id }) else {
+        try await typeCommand("/resume \(id)", into: win, session: s)
+        guard await waitFor(timeout: 10, { pidFile(pid)?.sessionId == id }) else {
             throw Failure.failed("Couldn't confirm the conversation came back. Check the session's window.")
         }
     }
@@ -225,7 +245,7 @@ public struct ClaudeCLI: Sendable {
         return (pid, try SessionWindow.find(pid: pid))
     }
 
-    @MainActor
+    /// Safe off the main thread: NSWorkspace's running-application list may be read from any thread.
     public static func typingBlocker(_ s: LiveSession, busyOK: Bool = true) -> String? {
         if s.kind == .background { return nil }   // handled by reopening in iTerm, not typing
         if s.state == .busy && !busyOK { return "Available when it's idle. It's working on a reply." }
@@ -242,14 +262,14 @@ public struct ClaudeCLI: Sendable {
     /// Anything else means there was a draft, so erase what was typed and stop. A busy session can
     /// start asking something meanwhile, so its pid file is checked again right before Return.
     @MainActor
-    func typeCommand(_ command: String, into win: SessionWindow, session s: LiveSession) throws {
+    func typeCommand(_ command: String, into win: SessionWindow, session s: LiveSession) async throws {
         try win.type(command, enter: false)
-        Thread.sleep(forTimeInterval: 0.5)
+        try? await Task.sleep(nanoseconds: 500_000_000)
         guard SessionWindow.draft(in: try win.screen()) == command else {
             try win.erase(command.count)
             throw Failure.failed("\(s.name) has unsent text in its prompt. Send or clear it, then try again.")
         }
-        let now = s.pid.flatMap { try? Data(contentsOf: paths.sessionsDir.appendingPathComponent("\($0).json")) }.flatMap(LiveSessions.parsePidFile)
+        let now = s.pid.flatMap(pidFile)
         if now?.state == .blocked {
             try win.erase(command.count)
             throw Failure.failed("\(s.name) just asked you something. Answer it, then try again.")
@@ -267,11 +287,11 @@ public struct ClaudeCLI: Sendable {
 
     @MainActor
     func waitForPhone(pid: Int32, on: Bool, timeout: TimeInterval) async -> Bool {
-        let file = paths.sessionsDir.appendingPathComponent("\(pid).json")
-        return await waitFor(timeout: timeout) {
-            let s = (try? Data(contentsOf: file)).flatMap(LiveSessions.parsePidFile)
-            return s?.isOnPhone == on
-        }
+        await waitFor(timeout: timeout) { pidFile(pid)?.isOnPhone == on }
+    }
+
+    func pidFile(_ pid: Int32) -> LiveSession? {
+        (try? Data(contentsOf: paths.sessionsDir.appendingPathComponent("\(pid).json"))).flatMap(LiveSessions.parsePidFile)
     }
 
     @MainActor
@@ -326,8 +346,9 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public static func focusTerminal(pid: Int32, cwd: String) -> Bool { Terminals.focus(pid: pid, cwd: cwd) }
 
-    /// The GUI app a process runs under, found by walking up its parents (claude → zsh → login → iTerm2).
     @MainActor
+    public static func focusTerminal(pid: Int32, cwd: String) async -> Bool { await Terminals.focus(pid: pid, cwd: cwd) }
+
     public static func owningApp(pid: Int32) -> NSRunningApplication? {
         let apps = Dictionary(NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
         var current = pid
@@ -348,4 +369,46 @@ public struct ClaudeCLI: Sendable {
         let ppid = info.kp_eproc.e_ppid
         return ppid > 0 ? ppid : nil
     }
+}
+
+/// Runs a tool and kills it if it outlives `timeout`. The sync form blocks its thread, so keep it off the main one.
+enum Subprocess {
+    struct Output: Sendable { let status: Int32; let output: Data; let timedOut: Bool }
+
+    static func run(_ exe: URL, _ args: [String], cwd: String? = nil, env: [String: String]? = nil,
+                    stderr: Bool = false, timeout: TimeInterval) throws -> Output {
+        let p = Process(), pipe = Pipe()
+        p.executableURL = exe
+        p.arguments = args
+        if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+        if let env { p.environment = env }
+        p.standardOutput = pipe
+        p.standardError = stderr ? pipe : FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0), drained = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+        try p.run()
+        // Drain while it runs, so a large output can't fill the pipe and stall it.
+        let buffer = Buffer()
+        DispatchQueue.global().async { buffer.data = pipe.fileHandleForReading.readDataToEndOfFile(); drained.signal() }
+        let timedOut = exited.wait(timeout: .now() + timeout) == .timedOut
+        if timedOut {
+            p.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut { kill(p.processIdentifier, SIGKILL); exited.wait() }
+        }
+        // A child it started can keep the pipe open after it exits; don't wait on that.
+        let data = drained.wait(timeout: .now() + 1) == .success ? buffer.data : Data()
+        return Output(status: p.terminationStatus, output: data, timedOut: timedOut)
+    }
+
+    static func run(_ exe: URL, _ args: [String], cwd: String? = nil, env: [String: String]? = nil,
+                    stderr: Bool = false, timeout: TimeInterval) async throws -> Output {
+        try await withCheckedThrowingContinuation { c in
+            DispatchQueue.global().async {
+                c.resume(with: Result { try run(exe, args, cwd: cwd, env: env, stderr: stderr, timeout: timeout) })
+            }
+        }
+    }
+
+    private final class Buffer: @unchecked Sendable { var data = Data() }
 }

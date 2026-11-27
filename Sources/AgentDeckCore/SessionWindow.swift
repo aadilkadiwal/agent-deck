@@ -89,6 +89,9 @@ public struct SessionWindow: Sendable {
         let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
         if let error {
             if (error[NSAppleScript.errorNumber] as? Int) == -1743 { throw Failure.notAllowed }
+            if (error[NSAppleScript.errorNumber] as? Int) == -1712 {
+                throw Failure.script("iTerm didn't answer. If macOS is asking whether Agent Deck may control iTerm, click Allow, then try again.")
+            }
             throw Failure.script(error[NSAppleScript.errorMessage] as? String ?? "AppleScript failed")
         }
         let out = result?.stringValue ?? ""

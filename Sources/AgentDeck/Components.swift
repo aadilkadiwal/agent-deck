@@ -180,6 +180,8 @@ struct HoverRow<Content: View>: View {
     }
 }
 
+
+
 func highlighted(_ text: String, _ query: String) -> AttributedString {
     var out = AttributedString(text)
     let q = query.trimmingCharacters(in: .whitespaces)
@@ -321,4 +323,82 @@ enum Radius {
     static let inner: CGFloat = 6
     static let row: CGFloat = 8
     static let panel: CGFloat = 10
+}
+
+struct LastHourBar: View {
+    let model: AppModel
+
+    private struct Part: Identifiable { let id: String, name: String, points: Double, color: Color }
+
+    private var parts: [Part] {
+        let h = model.lastHour
+        let tokens = model.recentUse.tokens.filter { t in model.live.contains { $0.sessionId == t.key } }
+        let sum = Double(max(tokens.values.reduce(0, +), 1))
+        var parts = tokens.sorted { $0.value > $1.value }.compactMap { id, n in
+            model.live.first { $0.sessionId == id }.map { Part(id: id, name: model.displayName($0), points: h.mine * Double(n) / sum, color: SessionColor.of(id)) }
+        }
+        if parts.isEmpty && h.mine > 0 { parts = [Part(id: "mac", name: "This Mac", points: h.mine, color: .accentColor)] }
+        if h.others > 0 { parts.append(Part(id: "others", name: "Other Macs on this login", points: h.others, color: Color.secondary.opacity(0.6))) }
+        return parts.filter { $0.points > 0 }
+    }
+
+    var body: some View {
+        let total = model.lastHour.total
+        if total >= 1 {
+            let parts = parts
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 4) {
+                    Text("Last hour").fontWeight(.semibold)
+                    Text("+\(Int(total.rounded()))% of the 5-hour limit").foregroundStyle(.secondary)
+                }
+                GeometryReader { g in
+                    HStack(spacing: 2) {
+                        ForEach(parts) { p in
+                            RoundedRectangle(cornerRadius: 2).fill(p.color)
+                                .frame(width: max(3, (g.size.width - CGFloat(parts.count - 1) * 2) * p.points / total))
+                        }
+                    }
+                }
+                .frame(height: 6)
+                ForEach(parts.prefix(4)) { p in
+                    HStack(spacing: 6) {
+                        Circle().fill(p.color).frame(width: 6, height: 6)
+                        Text(p.name).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 8)
+                        Text(p.points < 1 ? "<1%" : "\(Int(p.points.rounded()))%").monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .font(.subheadline)
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+struct LimitStopLine: View {
+    let model: AppModel
+    let session: LiveSession
+
+    var body: some View {
+        let queued = model.continueQueue.contains(session.sessionId)
+        let at = model.limitHit?.resetsAt.map(Fmt.clock)
+        let blocker = model.typingBlockers[session.sessionId]
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Hit the usage limit").foregroundStyle(.orange).lineLimit(1)
+            Button {
+                model.toggleContinue(session)
+            } label: {
+                Label(queued ? "Continues at \(at ?? "reset")" : at.map { "Continue at \($0)" } ?? "Continue now",
+                      systemImage: queued ? "checkmark.circle.fill" : "play.circle")
+                    .lineLimit(1).fixedSize()
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.accentColor.opacity(queued ? 0.25 : 0.12)))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .disabled(blocker != nil)
+            .help(blocker ?? (queued ? "Click to cancel" : "Agent Deck types \"continue\" into it as soon as the limit resets"))
+        }
+        .font(.subheadline)
+    }
 }
