@@ -31,9 +31,9 @@ public struct ClaudeCLI: Sendable {
         public static func stop(_ shortId: String) -> [String] { ["stop", shortId] }
         /// Removes a background entry, even one with no process. The conversation history is kept.
         public static func remove(_ shortId: String) -> [String] { ["rm", shortId] }
-        public static func newOnPhone(name: String) -> [String] {
+        public static func newOnPhone(name: String, worktree: Bool = false) -> [String] {
             let n = name.trimmingCharacters(in: .whitespaces)
-            return ["--bg", "--remote-control"] + (n.isEmpty ? [] : ["-n", n])
+            return ["--bg", "--remote-control"] + (n.isEmpty ? [] : ["-n", n]) + (worktree ? ["-w"] + (n.isEmpty ? [] : [ShellLine.slug(n)]) : [])
         }
     }
 
@@ -42,9 +42,16 @@ public struct ClaudeCLI: Sendable {
             "cd \(quote(cwd)) && claude --resume \(quote(sessionId))" + (phone ? " --remote-control" : "")
         }
         public static func attach(_ shortId: String) -> String { "claude attach \(quote(shortId))" }
-        public static func new(cwd: String, name: String) -> String {
+        /// `-w` goes last: its name is optional, so it would take the next argument as one.
+        public static func new(cwd: String, name: String, worktree: Bool = false) -> String {
             let n = name.trimmingCharacters(in: .whitespaces)
             return "cd \(quote(cwd)) && claude" + (n.isEmpty ? "" : " -n \(quote(n))")
+                + (worktree ? " -w" + (n.isEmpty ? "" : " \(quote(slug(n)))") : "")
+        }
+        /// Worktree and branch names can't hold spaces or most punctuation.
+        static func slug(_ name: String) -> String {
+            let s = name.lowercased().map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-" }
+            return String(s).split(separator: "-", omittingEmptySubsequences: true).joined(separator: "-")
         }
     }
 
@@ -56,7 +63,7 @@ public struct ClaudeCLI: Sendable {
         public var errorDescription: String? {
             switch self {
             case .untrusted(let f):
-                return "Claude Code doesn't trust \((f as NSString).lastPathComponent) yet. Open it once in iTerm, accept the prompt, then try again."
+                return "Claude Code doesn't trust \((f as NSString).lastPathComponent) yet. Open it once in your terminal, accept the prompt, then try again."
             case .failed(let msg): return msg
             }
         }
@@ -265,7 +272,7 @@ public struct ClaudeCLI: Sendable {
     func typeCommand(_ command: String, into win: SessionWindow, session s: LiveSession) async throws {
         try win.type(command, enter: false)
         try? await Task.sleep(nanoseconds: 500_000_000)
-        guard SessionWindow.draft(in: try win.screen()) == command else {
+        guard SessionWindow.typed(in: try win.screen()) == command.filter({ !$0.isWhitespace }) else {
             try win.erase(command.count)
             throw Failure.failed("\(s.name) has something typed but not sent. Send or clear it, then try again.")
         }
@@ -282,7 +289,7 @@ public struct ClaudeCLI: Sendable {
     @MainActor
     public func openWithPhone(_ s: LiveSession) async throws {
         try await stop(s)
-        try openInITerm(ShellLine.resume(s.sessionId, cwd: s.cwd, phone: true))
+        try openInTerminal(ShellLine.resume(s.sessionId, cwd: s.cwd, phone: true))
     }
 
     @MainActor
@@ -304,38 +311,25 @@ public struct ClaudeCLI: Sendable {
         return check()
     }
 
-    public func newOnPhone(cwd: String, name: String) async throws {
-        try await run(Args.newOnPhone(name: name), cwd: cwd)
+    public func newOnPhone(cwd: String, name: String, worktree: Bool = false) async throws {
+        try await run(Args.newOnPhone(name: name, worktree: worktree), cwd: cwd)
     }
 
-    /// iTerm doesn't reliably run `.command` files handed to it, so use its AppleScript API: a new
-    /// tab in the front window (a new window only when none is open), then type the line into the
-    /// user's normal shell. macOS asks once for permission to control iTerm.
+    /// Terminals don't reliably run `.command` files handed to them, so this goes through their
+    /// AppleScript and types the line into the user's normal shell. macOS asks once for permission.
     @MainActor
-    public func openInITerm(_ line: String) throws {
-        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionWindow.itermBundleId) != nil else {
-            throw Failure.failed("Agent Deck opens sessions in iTerm, which isn't installed. Get it from iterm2.com.")
+    public func openInTerminal(_ line: String, app: TerminalApp = .current) throws {
+        guard app.isInstalled else {
+            throw Failure.failed("\(app.title) isn't installed. Pick another terminal in Settings → General.")
         }
-        let source = """
-        tell application "iTerm"
-            activate
-            if current window is missing value then
-                set w to (create window with default profile)
-            else
-                set w to current window
-                tell w to create tab with default profile
-            end if
-            tell current session of w to write text "\(Self.appleScriptEscape(line))"
-        end tell
-        """
         var error: NSDictionary?
-        NSAppleScript(source: source)?.executeAndReturnError(&error)
+        NSAppleScript(source: app.script(line))?.executeAndReturnError(&error)
         if let error {
             let msg = error[NSAppleScript.errorMessage] as? String ?? "unknown error"
             let denied = (error[NSAppleScript.errorNumber] as? Int) == -1743
             throw Failure.failed(denied
-                ? "Agent Deck isn't allowed to control iTerm. Turn it on in System Settings → Privacy & Security → Automation."
-                : "Couldn't open iTerm: \(msg)")
+                ? "Agent Deck isn't allowed to control \(app.title). Turn it on in System Settings → Privacy & Security → Automation."
+                : "Couldn't open \(app.title): \(msg)")
         }
     }
 

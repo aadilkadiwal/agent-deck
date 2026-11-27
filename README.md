@@ -2,17 +2,20 @@
 
 A macOS menu bar app for your [Claude Code](https://claude.com/claude-code) sessions:
 
-- **Usage at a glance**: Dot, the app's face, opens the menu with one line ("2 working · 1 idle", "Nothing needs you") and slim bars for your 5-hour and weekly limits, with reset times. They're the same numbers `/usage` shows. A bar is grey, turns orange at your warning level and red when it's full, and tells you when you'll run out at your current pace. In the menu bar, Dot's rim is the same meter, and a number joins it from 50%: "86% · out 14:48", "100% · back 15:45".
-- **Running and Recent**: the menu opens on what's running, newest first. A blue dot means it's working, orange means it needs you. Under each name you see its folder, its branch when it isn't main, and what it's doing ("Iias · Bash: npm test 1:23"). Context shows once it passes 70%. Recent is one click away, with the last 15 sessions to preview or resume. Search looks through both. ⌘1 and ⌘2 switch.
-- **Answer Claude without switching windows**: permission prompts, questions and plans show up as cards in the menu and in the Waiting tab, and as alerts with buttons. From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it. In the menu, ⌘⏎ approves the selected card and ⌘⌫ denies it. Risky commands (deleting folders, force-pushing, `sudo`, piping a download into a shell) are marked in red, Deny is the main button, and they always need a click. The terminal still asks too, and whichever you answer first counts.
-- **Alerts with Dot**: you hear about it when a session needs you, a long task finishes (with the first line of Claude's reply), or a limit gets close. Alerts drop from the notch, or from Dot in the menu bar on a screen without one, each with its own sound. Settings → Notifications plays a sample of each. In a Focus, only prompts get through, quietly. Right-click Dot to snooze alerts for an hour. When you're away, alerts come as macOS notifications.
-- **Right-click Dot** for Snooze, New session, Details, Settings and Quit.
+- **Usage at a glance**: Dot, the app's face, opens the menu with one line ("2 working · 1 idle", "Nothing needs you") and slim bars for your 5-hour and weekly limits, with reset times. They're the same numbers `/usage` shows. A bar is grey, turns orange at your warning level and red when it's full, and tells you when you'll run out at your current pace. A thin tick marks how much of the window's time has gone, so you can see at a glance whether you're ahead of pace. In the menu bar, Dot's rim is the same meter, and a number joins it from 50%: "86% · out 14:48", "100% · back 15:45".
+- **Running and Recent**: the menu opens on what's running, newest first. A blue dot means it's working, orange means it needs you. Under each name you see its folder, its branch when it isn't main, and what it's doing ("shop-api · Bash: npm test 1:23"). Context shows once it passes 70%. Recent is one click away, with the last 15 sessions to preview or resume. Search looks through both. ⌘1 and ⌘2 switch.
+- **Answer Claude without switching windows**: permission prompts, questions and plans show up as cards in the menu and in the Waiting tab, and as alerts with buttons. From any app, ⌃⌥A allows the oldest prompt, ⌃⌥D denies it and ⌃⌥J takes you to the session that has waited longest. Each card says what the session did since you last looked ("edited 4 files · ran 6 commands"). Always allow is for this session unless you pick the project or everywhere, and Settings lists the lasting rules with Remove. In the menu, ⌘⏎ approves the selected card and ⌘⌫ denies it. Risky commands (deleting folders, force-pushing, `sudo`, piping a download into a shell) are marked in red, Deny is the main button, and they always need a click. The terminal still asks too, and whichever you answer first counts.
+- **Alerts with Dot**: you hear about it when a session needs you, a long task finishes (with the first line of Claude's reply), or a limit gets close. Alerts drop from the notch, or from Dot in the menu bar on a screen without one, each with its own sound. Settings → Notifications plays a sample of each. A prompt nobody answers gets one reminder after five minutes. In a Focus, only prompts get through, quietly. Right-click Dot to snooze alerts for an hour. When you're away, alerts come as macOS notifications.
+- **Reply from the menu**: Reply on a row or on the Done alert types a follow-up into the session's iTerm tab. If it's still working, the reply waits and goes out when it finishes.
+- **Claude's status**: when Claude Code or the API is having problems (from status.claude.com), a line in the menu says so, with a link.
+- **Keep the Mac awake** while a session works, off by default (Settings, or right-click Dot).
+- **Right-click Dot** for Snooze, Keep awake, New session, Details, Settings and Quit.
 - **Shortcut**: turn on ⌃⌥O to open the menu from any app (Settings → Shortcuts, or the welcome card).
 - **Health**: Settings (⌘,) shows whether the hooks work and repairs them in one click.
 - **Phone in one click**: open a running session on the Claude phone app while it keeps running on your Mac, or disconnect the phone again. No restart.
 - **Rename** running sessions (types `/rename`) and closed ones.
-- **New session without a terminal**: pick a folder, then start it for your phone or open it in iTerm.
-- **History**: projects in the sidebar, search, the last prompt under each name, branch and time columns, the whole conversation in the side panel, resume in iTerm, delete one or many, clean up empty sessions in one click, and keep history for 1 week, 2 weeks or 30 days.
+- **New session without a terminal**: pick a folder, then start it for your phone or open it in your terminal. In a git repo it can start in its own worktree, so it can't touch your checkout.
+- **History**: projects in the sidebar, search, the last prompt under each name, branch and time columns, the whole conversation in the side panel, resume in your terminal, delete one or many, clean up empty sessions in one click, and keep history for 1 week, 2 weeks or 30 days.
 - **Usage patterns**: a weekday × hour heatmap of when your 5-hour limit goes up, and how often you hit it.
 - **Full cleanup**: deleting a session also removes the scratchpad, undo backups and other files Claude Code kept for it, and lets you pick files it created in your project. Settings shows Claude's storage and clears leftovers from sessions that are already gone.
 
@@ -26,7 +29,7 @@ npx agent-deck
 
 Or without Node: `curl -fsSL https://raw.githubusercontent.com/aadilkadiwal/agent-deck/main/install.sh | bash`, or `./install.sh` from a checkout. Run it again any time to update.
 
-Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`), Claude Code, iTerm2.
+Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`), Claude Code, and iTerm2, Terminal or Ghostty (Settings → General → Open sessions in). Phone, compact, clear, rename and reply type into a running session, which needs iTerm2.
 
 The installer:
 1. Builds the app from source. Because it's built locally, there's no unsigned download for Gatekeeper to block. The first time, it makes a local signing certificate ("Agent Deck Local", in its own keychain) so every update keeps the same identity and macOS doesn't ask for folder access again.
@@ -56,7 +59,10 @@ Agent Deck has no server and no login. It reads what Claude Code already writes,
 | 📱 on a background session | It has no window, so it reopens in iTerm with `claude --resume <id> --remote-control`: on your Mac and your phone. |
 | Stop | `claude stop <id>` (background) or SIGTERM (terminal). Also removes it from the phone. |
 | New for phone | `claude --bg --remote-control -n <name>` in the chosen folder |
-| Open / resume a session | A new tab in your current iTerm window (a new window if none is open), via iTerm's AppleScript API. macOS asks once to allow it. |
+| Open / resume a session | Through the terminal's AppleScript: a new tab in iTerm or Ghostty (a new window if none is open), a new window in Terminal. macOS asks once to allow it. |
+| Reply | Types your text into the session's iTerm tab and presses Return, with the same checks as rename: never into a half-typed draft or an open question. A working session gets it when it's idle again. |
+| Start in a worktree | Adds `-w <name>` to the command, so Claude Code makes a git worktree and branch for the session. |
+| Claude's status | Reads `status.claude.com/api/v2/summary.json` every few minutes while a session works or the menu is open. Only the Claude Code and Claude API parts count. Off in Settings → General. |
 | Keep history for 7 / 14 / 30 days | `cleanupPeriodDays` in `~/.claude/settings.json` (Claude Code's own cleanup) |
 | Pace forecast | Usage readings logged to `~/.claude/agent-deck/usage-log.jsonl` (8 days kept). Rate over the last hour (5-hour limit) or day (weekly). |
 | Waiting / finished alerts | `waitingFor` and `status` in each session's pid file, read every 3 s (no process started) |

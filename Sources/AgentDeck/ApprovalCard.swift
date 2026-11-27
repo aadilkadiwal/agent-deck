@@ -66,6 +66,9 @@ struct ApprovalCard: View {
             }
             .accessibilityElement(children: .combine)
             .help(risk.map { "This one \($0), so shortcuts won't allow it. Click Allow once if you're sure." } ?? request.cwd)
+            if let did = model.away[request.sessionId]?.line {
+                Text(did).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let d = request.description, request.kind == .permission {
                 Text(d).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -120,7 +123,10 @@ struct ApprovalCard: View {
         case .deny: ("Denied", "xmark.circle.fill", .red)
         case .denyWith: ("Denied, with your reason", "xmark.circle.fill", .red)
         case .answers: ("Answer sent", "checkmark.circle.fill", .green)
-        case .allow(let always): (request.kind == .plan ? "Plan approved" : always ? "Always allowed" : "Allowed", "checkmark.circle.fill", .green)
+        case .allow(let always, let scope):
+            (request.kind == .plan ? "Plan approved" : !always ? "Allowed"
+             : scope == .session ? "Allowed for this session" : scope == .project ? "Always allowed here" : "Always allowed everywhere",
+             "checkmark.circle.fill", .green)
         case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
         case .terminal: ("Answered in the terminal", "terminal.fill", .secondary)
         }
@@ -212,14 +218,19 @@ struct ApprovalCard: View {
                     .help("Deny it, and tell Claude why if you like")
                 Spacer()
                 if let rule = request.alwaysLabel {
-                    Button("Always allow") { model.answer(request.id, .allow(always: true)) }
-                        .help("Allows it now and remembers \(rule), so Claude stops asking in this project")
+                    Menu("Always allow") {
+                        ForEach(RuleScope.allCases, id: \.self) { scope in
+                            Button(Self.scopeTitle(scope, cwd: request.cwd)) { model.answer(request.id, .allow(always: true, scope: scope)) }
+                        }
+                    } primaryAction: { model.answer(request.id, .allow(always: true, scope: .session)) }
+                    .menuStyle(.borderedButton).fixedSize()
+                    .help("Click: allow \(rule) until this session ends. Arrow: keep it for this project or everywhere.")
                 }
                 Button("Allow") { model.answer(request.id, .allow(always: false)) }.buttonStyle(.borderedProminent)
             }
             if let rule = request.alwaysLabel {
-                Text("Always allow remembers \(rule)").font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle).help(rule)
+                Text("Always allow covers \(rule) for this session. The arrow keeps it longer.").font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true).help(rule)
             }
         }
     }
@@ -238,11 +249,25 @@ struct HotkeyHint: View {
     let model: AppModel
 
     var body: some View {
-        if let r = model.pendingApprovals.first(where: { $0.kind == .permission }) {
-            Text(r.risk == nil ? "From any app, ⌃⌥A allows the oldest prompt and ⌃⌥D denies it"
-                               : "From any app, ⌃⌥D denies the oldest prompt. It's risky, so allowing it takes a click.")
-                .font(.subheadline).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if let r = model.pendingApprovals.first(where: { $0.kind == .permission }) {
+                Text(r.risk == nil ? "From any app, ⌃⌥A allows the oldest prompt, ⌃⌥D denies it and ⌃⌥J shows it in its terminal"
+                                   : "From any app, ⌃⌥D denies the oldest prompt and ⌃⌥J shows it in its terminal. It's risky, so allowing it takes a click.")
+            } else if !model.pendingApprovals.isEmpty || model.needsYou {
+                Text("From any app, ⌃⌥J shows the oldest waiting session in its terminal")
+            }
+        }
+        .font(.subheadline).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+extension ApprovalCard {
+    static func scopeTitle(_ scope: RuleScope, cwd: String) -> String {
+        switch scope {
+        case .session: "For this session"
+        case .project: "Always in \(Fmt.folderTitle(cwd))"
+        case .everywhere: "Always, in every project"
         }
     }
 }

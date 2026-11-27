@@ -240,6 +240,10 @@ private final class StatusTarget: NSObject {
         } else {
             menu.addItem(item("Snooze alerts for 1 hour") { Notifier.snooze(for: 3600) })
         }
+        let on = UserDefaults.standard.bool(forKey: AppModel.keepAwakeKey)
+        let awake = item("Keep Mac awake while Claude works") { [weak self] in self?.model?.setKeepAwake(!on) }
+        awake.state = on ? .on : .off
+        menu.addItem(awake)
         menu.addItem(.separator())
         menu.addItem(item("New session…") { [weak self] in self?.model?.startNewSession = true; StatusMenu.open() })
         menu.addItem(item("Details…") { [weak self] in self?.model?.showDetails?(.sessions) })

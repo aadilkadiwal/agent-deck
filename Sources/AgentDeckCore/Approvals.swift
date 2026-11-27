@@ -18,7 +18,8 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
     public let toolName: String
     public let detail: String
     public let description: String?
-    public let alwaysLabel: String?
+    public let alwaysRules: [String]
+    public var alwaysLabel: String? { alwaysRules.isEmpty ? nil : alwaysRules.joined(separator: ", ") }
     public let questions: [Question]
     /// From the whole command: `detail` is cut to 4000 characters.
     public let risk: String?
@@ -50,7 +51,7 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
             pid: (o["pid"] as? NSNumber)?.int32Value, sessionId: sid, cwd: p["cwd"] as? String ?? "", toolName: tool,
             detail: String(detail.prefix(maxDetail)),
             description: (input["description"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            alwaysLabel: kind == .permission ? alwaysLabel(p["permission_suggestions"]) : nil,
+            alwaysRules: kind == .permission ? alwaysRules(p["permission_suggestions"]) : [],
             questions: questions,
             risk: risk
         )
@@ -78,8 +79,8 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
         return String(decoding: d, as: UTF8.self)
     }
 
-    private static func alwaysLabel(_ suggestions: Any?) -> String? {
-        let rules = (suggestions as? [[String: Any]] ?? [])
+    private static func alwaysRules(_ suggestions: Any?) -> [String] {
+        (suggestions as? [[String: Any]] ?? [])
             .filter { $0["type"] as? String == "addRules" && $0["behavior"] as? String == "allow" }
             .flatMap { $0["rules"] as? [[String: Any]] ?? [] }
             .compactMap { r -> String? in
@@ -87,7 +88,6 @@ public struct ApprovalRequest: Identifiable, Equatable, Sendable {
                 let content = r["ruleContent"] as? String ?? ""
                 return content.isEmpty ? name : "\(name)(\(content))"
             }
-        return rules.isEmpty ? nil : rules.joined(separator: ", ")
     }
 
     private static func parseQuestions(_ raw: Any?) -> [Question] {
@@ -136,8 +136,14 @@ public enum Risk {
 }
 
 /// `.terminal` makes the hook print nothing, so Claude Code's own prompt decides.
+/// Where "Always allow" keeps the rule Claude Code suggested: until the session ends, in the
+/// project's .claude/settings.local.json, or in ~/.claude/settings.json.
+public enum RuleScope: String, Sendable, CaseIterable {
+    case session, project = "localSettings", everywhere = "userSettings"
+}
+
 public enum ApprovalAnswer: Equatable, Sendable {
-    case allow(always: Bool)
+    case allow(always: Bool, scope: RuleScope = .session)
     case deny
     case denyWith(reason: String)
     /// Question text → label; multi-select labels joined with ", ", as the terminal does.
@@ -148,7 +154,7 @@ public enum ApprovalAnswer: Equatable, Sendable {
     public var json: Data {
         let o: [String: Any]
         switch self {
-        case .allow(let always): o = ["decision": "allow", "always": always]
+        case .allow(let always, let scope): o = ["decision": "allow", "always": always, "scope": scope.rawValue]
         case .deny: o = ["decision": "deny"]
         case .denyWith(let reason): o = ["decision": "deny", "message": reason]
         case .acceptEdits: o = ["decision": "allow", "mode": "acceptEdits"]
@@ -247,10 +253,13 @@ public final class ApprovalServer: @unchecked Sendable {
         var uid: uid_t = 0, gid: gid_t = 0
         var on: Int32 = 1
         var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        guard getpeereid(fd, &uid, &gid) == 0, uid == getuid(),
-              setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0,
-              setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
-        else { close(fd); return }
+        guard getpeereid(fd, &uid, &gid) == 0, uid == getuid() else { close(fd); return }
+        // An event hook hangs up as soon as it has written its line, and macOS then refuses socket
+        // options (EINVAL). The line is already buffered, so it's read without blocking; a prompt
+        // whose hook is gone that way has nobody left to answer, so only events are kept.
+        let live = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0
+            && setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
+        if !live { _ = fcntl(fd, F_SETFL, O_NONBLOCK) }
 
         var data = Data()
         var buf = [UInt8](repeating: 0, count: 16384)
@@ -264,6 +273,7 @@ public final class ApprovalServer: @unchecked Sendable {
             if let e = AgentEvent.parse(o) { onEvent(e) }
             return
         }
+        guard live else { close(fd); return }
         let id = nextId
         nextId += 1
         guard let req = ApprovalRequest.parse(data, id: id) else {
