@@ -107,7 +107,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 Task { [weak self] in
                     let line = await self?.lastReply?(sid)
                     let lines = [line, did].compactMap { $0 }
-                    self?.post(PeekAlert(id: "done-\(sid)", kind: .done, title: title, meta: took, lines: lines, actions: actions, celebrate: big),
+                    self?.post(PeekAlert(id: "done-\(sid)", kind: .done, title: title, meta: ([took] + [did].compactMap { $0 }).joined(separator: " · "),
+                                         lines: [line].compactMap { $0 }, actions: actions, celebrate: big),
                                title: "\(title) is done",
                                body: ([took.replacingOccurrences(of: "Done after", with: "Took")] + lines).joined(separator: " · "), sessionId: sid)
                 }
