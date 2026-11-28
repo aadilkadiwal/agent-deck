@@ -85,7 +85,7 @@ Colors in the frontmatter are the light-mode values of the SwiftUI system colors
 
 ### Primary
 
-- **Accent** (`Color.accentColor`): selection, the confirm bar, focus rings, prompt bubbles. Follows the user's system accent.
+- **Accent** (`Color.accentColor`): selection, focus rings, prompt bubbles. Follows the user's system accent.
 
 ### Status (reserved)
 
@@ -152,7 +152,7 @@ A tinted notice in one of the status colors (setup warning, result banner, All c
 
 ### Confirm bar
 
-The accent-tinted strip under a row that asks before something happens (stop, compact, clear, open with phone, delete, rename). `ConfirmRow` gives the message + Cancel + the action. Return confirms, except for destructive actions, which need a click.
+The neutral strip (primary at 5%) under a row that asks before something happens (stop, compact, clear, open with phone, delete, rename). `ConfirmRow` gives the message + Cancel + the action. Return confirms, except for destructive actions, which need a click.
 
 ### Buttons
 

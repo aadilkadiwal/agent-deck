@@ -113,6 +113,12 @@ struct SettingsView: View {
             LabeledContent("Running or Recent") { Keys("⌘1", "⌘2") }
             LabeledContent("Search, refresh, new session") { Keys("⌘F", "⌘R", "⌘N") }
         } header: { Text("In the dropdown") }
+        Section {
+            LabeledContent("Search sessions") { Keys("⌘F") }
+            LabeledContent("Open or resume the selected session") { Keys("⏎") }
+            LabeledContent("Show or hide the side panel") { Keys("Space") }
+            LabeledContent("Delete the selected closed sessions") { Keys("⌫") }
+        } header: { Text("In the Details window") }
     }
 
     @ViewBuilder private var healthSummary: some View {
@@ -229,16 +235,22 @@ struct SettingsView: View {
                 .controlSize(.small)
                 .disabled(peekPlacement == PeekPlacement.banners.rawValue)
             }
+            .help(peekPlacement == PeekPlacement.banners.rawValue ? "Previews show Agent Deck's own alerts. macOS notifications look like any other app's." : "")
         } header: { Text("Alerts") } footer: {
-            Note("Without a notch they drop from Dot in the menu bar. They never show in screen sharing. In a Focus only prompts get through, quietly. When you're away, they arrive as macOS notifications.")
+            Note(peekPlacement == PeekPlacement.banners.rawValue
+                 ? "macOS shows them like any other app's notifications, so Focus and Notification settings apply. Preview needs Agent Deck's own alerts."
+                 : "Without a notch they drop from Dot in the menu bar. They never show in screen sharing. In a Focus only prompts get through, quietly. When you're away, they arrive as macOS notifications.")
         }
         Section {
             Toggle("A session needs your answer", isOn: $notifyWaiting)
             Toggle("A task that took over a minute finishes", isOn: $notifyFinished)
             Toggle("A limit gets close or looks set to run out", isOn: $notifyLimits)
             if notifyLimits {
-                Stepper(value: $warnLevel, in: 50...95, step: 5) {
-                    LabeledContent("Warn at", value: "\(Int(warnLevel))%")
+                LabeledContent("Warn at") {
+                    HStack(spacing: 4) {
+                        Text("\(Int(warnLevel))%").monospacedDigit()
+                        Stepper("Warn at", value: $warnLevel, in: 50...95, step: 5).labelsHidden()
+                    }
                 }
                 .onChange(of: warnLevel) { model.recheckLimits() }
             }
@@ -274,7 +286,7 @@ struct SettingsView: View {
                     .animation(Motion.fast(reduceMotion), value: old.count)
                 Spacer()
                 if confirmCleanup {
-                    ConfirmRow(message: "Move them to the Trash?", confirmTitle: "Clean up", destructive: true,
+                    ConfirmRow(message: old.count == 1 ? "Move it to the Trash?" : "Move them to the Trash?", confirmTitle: "Clean up", destructive: true,
                                cancel: { confirmCleanup = false }) { model.delete(old); confirmCleanup = false }
                 } else {
                     Button("Clean up…", role: .destructive) { confirmCleanup = true }.disabled(old.isEmpty)
