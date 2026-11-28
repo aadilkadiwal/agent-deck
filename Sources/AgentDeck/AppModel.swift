@@ -958,10 +958,11 @@ final class AppModel {
 
     /// Claude Code doesn't stop the hook when you answer in the terminal. Once the session's pid file
     /// no longer says it's waiting, the prompt is gone. The 3 s grace covers a pid file that hasn't
-    /// caught up with a brand-new prompt yet.
+    /// caught up with a brand-new prompt yet. Questions and plans are held back by the PreToolUse hook
+    /// before the terminal shows them, so the session never reads as waiting; their hook times out instead.
     private func dropAnsweredElsewhere() {
         let waiting = Dictionary(live.map { ($0.sessionId, $0.state == .blocked) }, uniquingKeysWith: { a, _ in a })
-        for r in approvals where waiting[r.sessionId] == false && Date().timeIntervalSince(r.receivedAt) > 3 {
+        for r in approvals where r.kind == .permission && waiting[r.sessionId] == false && Date().timeIntervalSince(r.receivedAt) > 3 {
             answer(r.id, .terminal)
         }
     }

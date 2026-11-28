@@ -97,7 +97,7 @@ final class PeekState {
 
 @MainActor
 enum Peek {
-    static let width: CGFloat = 400
+    static let width: CGFloat = 360
     private static let margin: CGFloat = 24   // room for the shadow
     private static let state = PeekState()
     private static var panel: PeekPanel?
@@ -322,9 +322,9 @@ private struct PeekView: View {
 
     @ViewBuilder private func content(_ a: PeekAlert) -> some View {
         let color = Dot.moodColor(a.kind.mood)
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
-                Dot(mood: a.kind.mood, percent: state.percent, size: 56, celebrate: a.celebrate)
+                Dot(mood: a.kind.mood, percent: state.percent, size: 40, celebrate: a.celebrate)
                 VStack(alignment: .leading, spacing: 2) {
                     Text((a.tag ?? a.kind.word).uppercased()).font(PeekFont.eyebrow).tracking(0.6).foregroundStyle(color)
                     Text(a.title).font(PeekFont.title).foregroundStyle(.white).lineLimit(3)
@@ -345,21 +345,27 @@ private struct PeekView: View {
             }
             if !a.lines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(a.lines, id: \.self) { Text($0).font(PeekFont.line).foregroundStyle(Color(white: 0.78)) }
+                    ForEach(a.lines, id: \.self) { Text($0).font(PeekFont.line).foregroundStyle(Color(white: 0.78)).lineLimit(2) }
                 }
             }
             if let done = state.doneText {
                 Label(done, systemImage: "checkmark.circle.fill").font(PeekFont.line).foregroundStyle(Color(white: 0.7))
                     .symbolRenderingMode(.multicolor)
             } else if !a.actions.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(Array(a.actions.enumerated()), id: \.offset) { _, action in
-                        Button(action.title) {
-                            // The confirmation shows first: answering dismisses this alert, unless it's confirming.
-                            Peek.finish(action.done)
-                            action.run()
+                let perRow = Self.buttonsPerRow(a.actions)
+                VStack(spacing: 8) {
+                    ForEach(Array(stride(from: 0, to: a.actions.count, by: perRow)), id: \.self) { start in
+                        HStack(spacing: 8) {
+                            ForEach(a.actions[start..<min(start + perRow, a.actions.count)].indices, id: \.self) { i in
+                                let action = a.actions[i]
+                                Button(action.title) {
+                                    // The confirmation shows first: answering dismisses this alert, unless it's confirming.
+                                    Peek.finish(action.done)
+                                    action.run()
+                                }
+                                .buttonStyle(PeekButton(style: action.style))
+                            }
                         }
-                        .buttonStyle(PeekButton(style: action.style))
                     }
                 }
             }
@@ -371,8 +377,19 @@ private struct PeekView: View {
                 .background(Capsule().fill(Color(white: 0.13)))
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16).padding(.vertical, 12)
         .padding(.top, topInset)
+    }
+
+    /// Buttons share one row equally. When the widest label wouldn't fit its share (a question with long
+    /// options), they go two to a row instead, so no answer is cut off.
+    private static func buttonsPerRow(_ actions: [PeekAlert.Action]) -> Int {
+        let n = actions.count
+        guard n > 2 else { return max(n, 1) }
+        let share = (Peek.width - 32 - 8 * CGFloat(n - 1)) / CGFloat(n)
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)   // PeekFont.button
+        let widest = actions.map { ($0.title as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        return widest + 8 <= share ? n : 2
     }
 
     private var topInset: CGFloat {
