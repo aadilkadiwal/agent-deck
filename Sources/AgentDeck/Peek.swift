@@ -341,7 +341,7 @@ private struct PeekView: View {
                     .padding(.horizontal, 11).padding(.vertical, 9)
                     .background(Color(red: 0.086, green: 0.094, blue: 0.114), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(a.kind == .risky ? Color.red.opacity(0.55) : Color(white: 0.16)))
+                        .strokeBorder(a.kind == .risky ? Tone.risky.opacity(0.55) : Color(white: 0.16)))
             }
             if !a.lines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {

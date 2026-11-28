@@ -3,7 +3,7 @@ import AgentDeckCore
 import SwiftUI
 
 enum Level {
-    static func color(_ pct: Double) -> Color { pct >= LimitWindow.full ? .red : pct >= Notifier.warnAt ? .orange : .gray }
+    static func color(_ pct: Double) -> Color { pct >= LimitWindow.full ? Tone.risky : pct >= Notifier.warnAt ? Tone.waiting : .gray }
 }
 
 enum Motion {
@@ -15,9 +15,8 @@ enum Motion {
 }
 
 enum SessionColor {
-    private static let palette: [Color] = [.teal, .purple, .pink, .indigo, .cyan,
-                                           adaptive(light: (0.39, 0.45, 0.55), dark: (0.58, 0.64, 0.74)),
-                                           adaptive(light: (0.61, 0.31, 0.59), dark: (0.80, 0.52, 0.78))]
+    // No purples, so a session is never mistaken for the brand violet.
+    private static let palette: [Color] = [.teal, .pink, .indigo, .cyan, adaptive(light: (0.39, 0.45, 0.55), dark: (0.58, 0.64, 0.74))]
 
     private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
@@ -107,10 +106,17 @@ struct MeterBar: View {
     }
 }
 
+/// Status colours. Light mode gets darker fills so dots and bars keep 3:1 on the light menu, and done is a
+/// bluish green that stays apart from risky and waiting with red–green colour blindness. Brand violet means no status.
 enum Tone {
+    static let waiting = adaptive(light: (0.80, 0.384, 0.0), dark: (1.0, 0.624, 0.039))       // #CC6200 / #FF9F0A
+    static let working = adaptive(light: (0.0, 0.478, 1.0), dark: (0.039, 0.518, 1.0))        // #007AFF / #0A84FF
+    static let done = adaptive(light: (0.043, 0.49, 0.365), dark: (0.184, 0.839, 0.663))      // #0B7D5D / #2FD6A9
+    static let risky = adaptive(light: (0.878, 0.161, 0.122), dark: (1.0, 0.271, 0.227))      // #E0291F / #FF453A
+    static let brand = adaptive(light: (0.431, 0.337, 0.812), dark: (0.639, 0.58, 1.0))       // #6E56CF / #A394FF
     static let warnText = adaptive(light: (0.66, 0.33, 0.0), dark: (1.0, 0.62, 0.04))
     static let riskText = adaptive(light: (0.79, 0.11, 0.08), dark: (1.0, 0.41, 0.38))
-    static let okText = adaptive(light: (0.11, 0.48, 0.23), dark: (0.19, 0.82, 0.35))
+    static let okText = done
 
     private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in

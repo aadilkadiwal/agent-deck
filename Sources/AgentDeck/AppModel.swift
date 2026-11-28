@@ -181,8 +181,6 @@ final class AppModel {
             self?.replyTarget = sid
             StatusMenu.open()
         }
-        hotkeys.onKey = { [weak self] allow in self?.answerWithHotkey(allow: allow) }
-        hotkeys.onJump = { [weak self] in self?.jumpToWaiting() }
         hotkeys.onMenu = { StatusMenu.toggle() }
         menuHotkeyFailed = !hotkeys.setMenuKey(MenuHotkey.current)
         UserDefaults.standard.register(defaults: [Self.approvalsKey: true, Self.statusKey: true])
@@ -387,7 +385,6 @@ final class AppModel {
             away = away.filter { id, _ in next.contains { $0.sessionId == id } }
             sendQueuedReplies()
             updateAwake()
-            updateApprovalUI()
             updateRecentFolders()
             lookUp(next)
         }
@@ -595,10 +592,13 @@ final class AppModel {
         perform(s.sessionId, success: "Compacting \(displayName(s)). Its context bar updates when it's done.") { try await $0.compact(s) }
     }
 
-    func setMenuHotkey(_ key: MenuHotkey) {
-        UserDefaults.standard.set(key.rawValue, forKey: MenuHotkey.key)
+    func setMenuHotkey(_ key: MenuHotkey?) {
+        UserDefaults.standard.set(key?.stored, forKey: MenuHotkey.key)
         menuHotkeyFailed = !hotkeys.setMenuKey(key)
     }
+
+    /// While Settings records a new one, so pressing the current key is captured instead of opening the menu.
+    func pauseMenuHotkey() { _ = hotkeys.setMenuKey(nil) }
 
     func rename(_ s: LiveSession, to name: String) {
         perform(s.sessionId, success: "Renamed to \(name).") { try await $0.rename(s, to: name) }
@@ -726,14 +726,6 @@ final class AppModel {
         }
     }
 
-    /// ⌃⌥J: the session that has waited longest, in its own terminal tab.
-    private func jumpToWaiting() {
-        let carded = pendingApprovals.map { ($0.sessionId, $0.receivedAt) }
-        let other = blockedSince.filter { sid, _ in !carded.contains { $0.0 == sid } }.map { ($0.key, $0.value) }
-        guard let sid = (carded + other).min(by: { $0.1 < $1.1 })?.0 else { NSSound.beep(); return }
-        openSession(id: sid)
-    }
-
     // MARK: Allowed rules
 
     private func logRules(_ r: ApprovalRequest, _ scope: RuleScope) {
@@ -840,7 +832,6 @@ final class AppModel {
         approvalServer?.stop()
         approvalServer = nil
         approvals = []
-        updateApprovalUI()
         guard on else { return }
         let server = ApprovalServer(
             path: paths.approvalSocket.path,
@@ -865,7 +856,6 @@ final class AppModel {
         notifier.approvalArrived(r, name: name)
         AccessibilityNotification.Announcement(r.kind == .permission ? "\(name) wants to use \(r.toolName)"
                                                : r.kind == .plan ? "\(name) has a plan for you" : "\(name) has a question").post()
-        updateApprovalUI()
     }
 
     static let editTools: Set<String> = ["Edit", "MultiEdit", "Write", "NotebookEdit"]
@@ -914,7 +904,6 @@ final class AppModel {
         outcomes[id] = a
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         notifier.approvalDone(id)
-        updateApprovalUI()
         Task { try? await Task.sleep(nanoseconds: 700_000_000); removeApproval(id) }
     }
 
@@ -928,7 +917,6 @@ final class AppModel {
         guard approvals.contains(where: { $0.id == id }) else { return }
         approvals.removeAll { $0.id == id }
         notifier.approvalDone(id)
-        updateApprovalUI()
     }
 
     // A notification posted before its category changed can still carry an Allow button.
@@ -939,21 +927,6 @@ final class AppModel {
 
     private func openPrompt(_ id: Int) {
         if let r = approvals.first(where: { $0.id == id }) { openSession(id: r.sessionId) }
-    }
-
-    private func answerWithHotkey(allow: Bool) {
-        guard let r = pendingApprovals.first(where: { $0.kind == .permission }) else { return }
-        if allow, let risk = r.risk {
-            banner = Banner(text: "That command \(risk), so it needs a click. Open the menu and choose Allow once.", isError: true)
-            NSSound.beep()
-            return
-        }
-        answer(r.id, allow ? .allow(always: false) : .deny)
-    }
-
-    private func updateApprovalUI() {
-        hotkeys.setEnabled(pendingApprovals.contains { $0.kind == .permission })
-        hotkeys.setJump(!pendingApprovals.isEmpty || needsYou)
     }
 
     /// Claude Code doesn't stop the hook when you answer in the terminal. Once the session's pid file

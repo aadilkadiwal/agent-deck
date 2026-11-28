@@ -199,9 +199,7 @@ struct MenuView: View {
                 }
                 listFocused = true
                 StatusMenu.escape = escape
-                // Same card ⌃⌥A answers, so the outline and the hotkey hint agree.
-                let hotkeyTarget = model.pendingApprovals.first { $0.kind == .permission }?.id
-                if let id = hotkeyTarget ?? model.pendingApprovals.last?.id { cursor = .card(id) }
+                if let id = model.pendingApprovals.first?.id { cursor = .card(id) }
             }
             .onDisappear {
                 StatusMenu.escape = nil
@@ -278,8 +276,8 @@ struct MenuView: View {
         if !missing.isEmpty {
             let text = missing.contains("claude") ? "Prompts won't show up here until you repair setup"
                 : "Usage and context won't update until you repair setup"
-            Callout(tint: .orange) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Callout(tint: Tone.waiting) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.waiting)
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 Button("Repair setup") { Task { await model.repairHooks() } }.controlSize(.small)
@@ -441,8 +439,8 @@ struct MenuView: View {
             if model.limitHit == nil,
                let w = [u.fiveHour, u.weekly].compactMap({ $0 }).first(where: { if case .reachesLimit(let at) = model.forecast($0), at > Date() { true } else { false } }),
                case .reachesLimit(let at) = model.forecast(w), !model.switchCandidates.isEmpty {
-                Callout(tint: .orange) {
-                    Image(systemName: "clock").foregroundStyle(.orange)
+                Callout(tint: Tone.waiting) {
+                    Image(systemName: "clock").foregroundStyle(Tone.waiting)
                     Text("You'll hit the \(w.label.lowercased()) limit around \(Fmt.clock(at)). Sonnet uses less of it.").fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     Button("Switch \(model.switchCandidates.count) to Sonnet") { model.switchToSonnet() }
@@ -598,7 +596,7 @@ struct MenuView: View {
                     .rotationEffect(.degrees(open ? 90 : 0))
                 Text(g.name).font(.callout.weight(.semibold))
                 if g.sessions.contains(where: { $0.state == .blocked }) {
-                    Image(systemName: "exclamationmark.circle.fill").font(.system(size: 9)).foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.circle.fill").font(.system(size: 9)).foregroundStyle(Tone.waiting)
                         .help("Something here needs you")
                 }
                 Spacer()
@@ -670,7 +668,7 @@ struct MenuView: View {
             .onHover { inside in
                 if inside { hoveredRow = s.sessionId } else if hoveredRow == s.sessionId { hoveredRow = nil }
             }
-            .background { if waiting { RoundedRectangle(cornerRadius: Radius.row).fill(Color.orange.opacity(0.08)) } }
+            .background { if waiting { RoundedRectangle(cornerRadius: Radius.row).fill(Tone.waiting.opacity(0.08)) } }
             .animation(Motion.snappy(reduceMotion), value: s.state)
             .contextMenu {
                 Button("Reply…") { confirm = .reply(s) }.disabled(replyBlocker(s) != nil)
@@ -714,7 +712,7 @@ struct MenuView: View {
 
     private func statusBanner(_ st: ServiceStatus) -> some View {
         Callout(tint: .secondary) {
-            Image(systemName: "exclamationmark.icloud").foregroundStyle(.orange)
+            Image(systemName: "exclamationmark.icloud").foregroundStyle(Tone.waiting)
             Text(st.text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             Button("Status page ↗") { NSWorkspace.shared.open(st.link) }.controlSize(.small)
@@ -925,15 +923,15 @@ struct MenuView: View {
     private var cardHint: String {
         guard case .card(let id) = cursor, let r = model.approvals.first(where: { $0.id == id }) else { return "↑↓ move · ⌘K actions" }
         switch r.kind {
-        case .question: return "↑↓ move · 1–\(min(4, r.questions.first?.options.count ?? 4)) pick an answer · ⌃⌥J show"
-        case .plan: return "↑↓ move · ⌘⏎ approve plan · ⌘K more · ⌃⌥J show"
+        case .question: return "↑↓ move · 1–\(min(4, r.questions.first?.options.count ?? 4)) pick an answer · ⏎ show"
+        case .plan: return "↑↓ move · ⌘⏎ approve plan · ⌘K more · ⏎ show"
         case .permission:
-            return r.risk == nil ? "⌘⏎ allow · ⌘⌫ deny · ⌘K more · ⌃⌥A ⌃⌥D ⌃⌥J anywhere" : "⌘⌫ deny · allowing it takes a click · ⌃⌥J show"
+            return r.risk == nil ? "⌘⏎ allow · ⌘⌫ deny · ⏎ show · ⌘K more" : "⌘⌫ deny · allowing it takes a click · ⏎ show"
         }
     }
 
     static func spoken(_ hint: String) -> String {
-        [("⌃⌥", "Control Option "), ("⌘⏎", "Command Return"), ("⌘⌫", "Command Delete"), ("⌘K", "Command K"),
+        [("⌘⏎", "Command Return"), ("⌘⌫", "Command Delete"), ("⌘K", "Command K"),
          ("↑↓", "arrows"), ("⏎", "Return"), (" · ", ", ")]
             .reduce(hint) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
     }
@@ -1183,9 +1181,9 @@ struct BannerView: View {
 
     var body: some View {
         if let b = model.banner {
-            Callout(tint: b.blocking ? .red : b.isError ? .orange : .green, alignment: .top) {
+            Callout(tint: b.blocking ? Tone.risky : b.isError ? Tone.waiting : Tone.done, alignment: .top) {
                 Image(systemName: b.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(b.blocking ? .red : b.isError ? .orange : .green)
+                    .foregroundStyle(b.blocking ? Tone.risky : b.isError ? Tone.waiting : Tone.done)
                 Text(b.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if let title = b.actionTitle, let action = b.action {
@@ -1200,7 +1198,7 @@ struct BannerView: View {
                         EmptyView()
                     } currentValueLabel: { EmptyView() }
                     .progressViewStyle(.linear)
-                    .tint(.green)
+                    .tint(Tone.done)
                     .scaleEffect(x: 1, y: 0.5, anchor: .bottom)
                     .padding(.horizontal, 8)
                     .accessibilityHidden(true)
@@ -1386,7 +1384,7 @@ struct ActionPanel: View {
 struct WelcomeCard: View {
     let model: AppModel
     let done: () -> Void
-    @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.off.rawValue
+    @AppStorage(MenuHotkey.key) private var menuHotkey = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1401,28 +1399,24 @@ struct WelcomeCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 setup
                 Label("Press ⌘K on any row to see everything you can do", systemImage: "keyboard")
-                if menuHotkey != MenuHotkey.off.rawValue && model.menuHotkeyFailed {
-                    Label("\(MenuHotkey(rawValue: menuHotkey)?.title ?? "The shortcut") is already used by another app. Pick another one in Settings → Shortcuts.",
-                          systemImage: "exclamationmark.triangle.fill").foregroundStyle(Tone.warnText)
-                }
             }
             HStack(spacing: 8) {
-                if menuHotkey == MenuHotkey.off.rawValue {
-                    Button("Open with ⌃⌥O") {
-                        menuHotkey = MenuHotkey.ctrlOptO.rawValue
-                        model.setMenuHotkey(.ctrlOptO)
+                if MenuHotkey(stored: menuHotkey) == nil {
+                    Button("Choose a shortcut…") {
+                        UserDefaults.standard.set(SettingsPage.shortcuts.rawValue, forKey: SettingsPage.key)
+                        model.showSettings?()
                     }
-                    .help("Opens this menu from any app. Change it or turn it off in Settings → Shortcuts.")
+                    .help("Pick a key that opens this menu from any app")
                 }
                 Spacer()
-                Button("Got it", action: done).buttonStyle(.borderedProminent)
+                Button("Got it", action: done).buttonStyle(.borderedProminent).tint(Tone.brand)
             }
             .controlSize(.small)
         }
         .font(.callout)
         .fixedSize(horizontal: false, vertical: true)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: Radius.row).fill(Tone.brand.opacity(0.12)))
     }
 
     @ViewBuilder private var setup: some View {
