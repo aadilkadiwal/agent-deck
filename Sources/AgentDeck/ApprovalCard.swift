@@ -17,10 +17,10 @@ struct ApprovalCard: View {
     private var risk: String? { request.risk }
     private var tint: Color {
         switch outcome {
-        case .deny, .denyWith: .red
-        case .allow, .acceptEdits, .answers: .green
+        case .deny, .denyWith: Tone.risky
+        case .allow, .acceptEdits, .answers: Tone.done
         case .terminal: .secondary
-        case nil: risk == nil ? .orange : .red
+        case nil: risk == nil ? Tone.waiting : Tone.risky
         }
     }
 
@@ -46,6 +46,10 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if outcome == nil {
+                    Image(systemName: request.symbol).font(.system(size: 12, weight: .bold)).foregroundStyle(risk == nil ? Tone.warnText : Tone.riskText)
+                        .accessibilityHidden(true)
+                }
                 Text(word.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(outcome == nil ? (risk == nil ? Tone.warnText : Tone.riskText) : tint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
@@ -86,7 +90,7 @@ struct ApprovalCard: View {
                 .frame(maxHeight: roomy ? 520 : expanded ? 260 : 150)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.primary.opacity(0.05)))
-                .overlay { if risk != nil { RoundedRectangle(cornerRadius: Radius.inner).strokeBorder(Color.red.opacity(0.6)) } }
+                .overlay { if risk != nil { RoundedRectangle(cornerRadius: Radius.inner).strokeBorder(Tone.risky.opacity(0.6)) } }
                 if long {
                     Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(Motion.spring(reduced: reduceMotion)) { expanded.toggle() } }
                         .buttonStyle(.link).font(.subheadline)
@@ -101,11 +105,7 @@ struct ApprovalCard: View {
         .font(.callout)
         .controlSize(.small)
         .padding(12)
-        .padding(.leading, 3)
         .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
-        .overlay(alignment: .leading) {
-            UnevenRoundedRectangle(topLeadingRadius: Radius.row, bottomLeadingRadius: Radius.row).fill(tint).frame(width: 3)
-        }
         .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.5) } }
         .overlay { if let o = outcome { outcomeView(o) } }
         .accessibilityElement(children: .contain)
@@ -148,7 +148,7 @@ struct ApprovalCard: View {
         var out = AttributedString()
         for (i, line) in detail.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             var a = AttributedString((i == 0 ? "" : "\n") + line)
-            a.foregroundColor = i == 0 ? .secondary : line.hasPrefix("- ") ? .red : line.hasPrefix("+ ") ? .green : .primary
+            a.foregroundColor = i == 0 ? .secondary : line.hasPrefix("- ") ? Tone.risky : line.hasPrefix("+ ") ? Tone.done : .primary
             out += a
         }
         return out
@@ -208,7 +208,7 @@ struct ApprovalCard: View {
                 .help("Allows just this run. Risky commands can't be always allowed.")
             Spacer()
             Button("Deny…") { withAnimation(Motion.snappy(reduceMotion)) { denying = true } }
-                .buttonStyle(.borderedProminent).tint(.red)
+                .buttonStyle(.borderedProminent).tint(Tone.risky)
                 .help("Deny it, and tell Claude why if you like")
         }
     }
@@ -248,20 +248,14 @@ struct ApprovalCard: View {
     }
 }
 
-struct HotkeyHint: View {
-    let model: AppModel
-
-    var body: some View {
-        Group {
-            if let r = model.pendingApprovals.first(where: { $0.kind == .permission }) {
-                Text(r.risk == nil ? "From any app, ⌃⌥A allows the oldest prompt, ⌃⌥D denies it and ⌃⌥J shows it in its terminal"
-                                   : "From any app, ⌃⌥D denies the oldest prompt and ⌃⌥J shows it in its terminal. It's risky, so allowing it takes a click.")
-            } else if !model.pendingApprovals.isEmpty || model.needsYou {
-                Text("From any app, ⌃⌥J shows the oldest waiting session in its terminal")
-            }
+extension ApprovalRequest {
+    var symbol: String {
+        if risk != nil { return "exclamationmark.triangle.fill" }
+        switch kind {
+        case .permission: return "hand.raised.fill"
+        case .plan: return "list.bullet.clipboard.fill"
+        case .question: return "questionmark.bubble.fill"
         }
-        .font(.subheadline).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -374,7 +368,9 @@ struct QueuedCard: View {
         let risk = request.risk
         Button(action: open) {
             HStack(spacing: 8) {
-                Capsule().fill(risk == nil ? Color.orange : .red).frame(width: 3, height: 28)
+                Image(systemName: request.symbol).font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(risk == nil ? Tone.warnText : Tone.riskText).frame(width: 18, height: 28)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(model.sessionName(request.sessionId, cwd: request.cwd)).font(.callout.weight(.semibold)).lineLimit(1)
                     Text(summary).font(request.kind == .permission ? .subheadline.monospaced() : .subheadline)

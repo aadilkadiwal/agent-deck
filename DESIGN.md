@@ -3,17 +3,16 @@ name: Agent Deck
 description: A calm macOS menu bar deck for answering and steering coding-agent sessions.
 colors:
   accent: "#007AFF"
-  waiting: "#FF9500"
-  working: "#34C759"
-  risky: "#FF3B30"
-  session-blue: "#007AFF"
+  waiting: "#CC6200"
+  working: "#007AFF"
+  done: "#0B7D5D"
+  risky: "#E0291F"
+  brand: "#6E56CF"
   session-teal: "#30B0C7"
-  session-purple: "#AF52DE"
   session-pink: "#FF2D55"
   session-indigo: "#5856D6"
   session-cyan: "#32ADE6"
   session-slate: "#63738C"
-  session-plum: "#9C4F96"
   surface-tint: "rgba(0, 0, 0, 0.06)"
 typography:
   title:
@@ -77,9 +76,9 @@ components:
 
 ## Overview
 
-A tool you glance at, not a place you stay. Agent Deck looks like macOS itself: system fonts, system colors, standard controls and SF Symbols. Its character comes from one strict color language (orange = needs you, green = working, red = risky) and from restraint: rows are quiet until you point at them, and the loudest thing on screen is always whatever is waiting for you.
+A tool you glance at, not a place you stay. Agent Deck looks like macOS itself: system fonts, system colors, standard controls and SF Symbols. Its character comes from one strict color language (orange = needs you, blue = working, bluish green = done, red = risky) and from restraint: rows are quiet until you point at them, and the loudest thing on screen is always whatever is waiting for you.
 
-Colors in the frontmatter are the light-mode values of the SwiftUI system colors the code uses (`.orange`, `.green`, `.red`, `.accentColor`…). The code, not these hex values, is the source of truth; system colors adapt to dark mode on their own.
+Colors in the frontmatter are the light-mode values. Status and brand colors live in `Tone` (Meters.swift), each with a light and a dark value; the code is the source of truth.
 
 ## Colors
 
@@ -89,17 +88,25 @@ Colors in the frontmatter are the light-mode values of the SwiftUI system colors
 
 ### Status (reserved)
 
-- **Waiting** (`.orange`): a session needs you. Card stripe and tint, waiting row tint, menu bar dot, context bar from 70%.
-- **Working** (`.green`): a session is busy. Filled pulsing dot; hollow green dot = idle.
-- **Risky** (`.red`): a risky command, a denied answer, context from 90%.
+- **Waiting** (`Tone.waiting`, #CC6200 / #FF9F0A): a session needs you. Card icon, waiting row tint, ringed dot, menu bar dot, context bar from 70%.
+- **Working** (`Tone.working`, #007AFF / #0A84FF): a session is busy. Filled pulsing dot; a hollow grey dot is idle.
+- **Done** (`Tone.done`, #0B7D5D / #2FD6A9): finished, allowed, healthy. Bluish, so it stays apart from risky and waiting with red–green colour blindness.
+- **Risky** (`Tone.risky`, #E0291F / #FF453A): a risky command, a denied answer, a full limit, context from 90%.
+
+Light mode gets darker fills so dots and bars keep 3:1 against the menu. Dot's body is graphite in both appearances, so it always uses the dark values.
+
+### Brand
+
+- **Violet** (`Tone.brand`, #6E56CF / #A394FF): the ring around Dot on the app icon and the welcome card. It has no status meaning and appears nowhere else.
 
 ### Session palette
 
-Eight colors that mark a session's row and its prompt card: blue, teal, purple, pink, indigo, cyan, slate, plum. Slate and plum have their own dark-mode values. Green, orange and brown are never used: they would read as a status.
+Five colors that mark a session: teal, pink, indigo, cyan, slate. Slate has its own dark-mode value. Green, orange, blue and red are never used, because they would read as a status, and neither is purple, because it would read as the brand.
 
 ### Named Rules
 
-- **Status colors are reserved.** Orange, green and red only ever mean waiting, working and risky. Nothing decorative uses them.
+- **Status colors are reserved.** Orange, blue, bluish green and red only ever mean waiting, working, done and risky. Nothing decorative uses them.
+- **Never color alone.** Every status also has a shape or a word: hollow, solid and ringed dots; an icon on each prompt; the RISKY tag.
 - **One tint per surface.** A surface gets at most one tinted background; emphasis beyond that comes from weight, not more color.
 
 ## Typography
@@ -144,7 +151,7 @@ Session color bar (3 pt), state dot, name (+ phone icon, Background / agent pill
 
 ### Approval card
 
-Line 1: session color dot, name, folder and branch, timer, terminal button. Line 2: what it wants, plus a red RISKY tag with the reason when the command is risky. Then the command, diff or plan (plans as formatted text), then the answer buttons. A risky card turns red, Deny becomes the prominent button, Allow becomes "Allow once" and there is no Always allow.
+No side stripe. The first line starts with an SF Symbol in the status color: a hand for a permission, a speech bubble for a question, a clipboard for a plan, a triangle for risky. Collapsed prompts show the same symbol in front of their name. Line 1: session color dot, name, folder and branch, timer, terminal button. Line 2: what it wants, plus a red RISKY tag with the reason when the command is risky. Then the command, diff or plan (plans as formatted text), then the answer buttons. A risky card turns red, Deny becomes the prominent button, Allow becomes "Allow once" and there is no Always allow.
 
 ### Callout
 
@@ -168,14 +175,15 @@ A floating window that stays above other apps. Full: usage line, prompt cards, o
 
 ### Welcome card
 
-Shown once in the dropdown: setup status (with Repair), ⌘K, Pin, and an offer to turn on the ⌃⌥O shortcut. Dismissed with "Got it".
+Shown once in the dropdown, on a violet tint (the only brand color inside the app): setup status (with Repair), ⌘K, and "Choose a shortcut…", which opens Settings → Shortcuts. Dismissed with "Got it".
 
 ## Do's and Don'ts
 
 - **Do** put whatever needs the user at the top; shrink everything else.
 - **Do** say why an action is unavailable (tooltip, dimmed ⌘K entry) instead of hiding it.
 - **Do** use plain words: "Background", "Old entry", "Weekly 18%".
-- **Don't** use orange, green or red for decoration.
+- **Don't** use orange, blue, green or red for decoration, or violet for anything but the brand.
+- **Don't** add a key that works outside Agent Deck by default. The only global shortcut is the open-menu key the user records.
 - **Don't** add text below 11 pt or fixed font sizes for text.
 - **Don't** animate the same event in more than one place at once (a waiting prompt gets the card's arrival and the menu bar dot, nothing more).
 - **Don't** let a key press from another app approve a risky command.

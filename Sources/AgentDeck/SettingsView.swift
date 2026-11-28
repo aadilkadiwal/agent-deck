@@ -29,7 +29,6 @@ struct SettingsView: View {
     @AppStorage(PeekPlacement.key) private var peekPlacement = PeekPlacement.automatic.rawValue
     @AppStorage(SettingsPage.key) private var page = SettingsPage.general.rawValue
     @AppStorage(Notifier.Key.warnAt) private var warnLevel = 80.0
-    @AppStorage(MenuHotkey.key) private var menuHotkey = MenuHotkey.off.rawValue
     @StateObject private var updater = Updater()
     @State private var cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var confirmCleanup = false
@@ -85,27 +84,12 @@ struct SettingsView: View {
 
     @ViewBuilder private var shortcuts: some View {
         Section {
-            Picker("Open the menu from any app", selection: Binding(get: { MenuHotkey(rawValue: menuHotkey) ?? .off },
-                                                                     set: { menuHotkey = $0.rawValue; model.setMenuHotkey($0) })) {
-                ForEach(MenuHotkey.allCases) { Text($0.title).tag($0) }
-            }
-            if model.menuHotkeyFailed {
-                Label("Another app already uses \((MenuHotkey(rawValue: menuHotkey) ?? .off).title), so it does nothing here. Pick a different one.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(Tone.warnText)
-            }
-        } header: { Text("Menu") } footer: {
-            Note("Opens the menu with the newest prompt selected, so ⌘⏎ answers it and Esc closes it. Heads up: ⌃⌥Space also switches keyboard languages if you use more than one.")
+            ShortcutRecorder(model: model)
+        } header: { Text("From any app") } footer: {
+            Note("The only Agent Deck shortcut that works outside it. It opens the menu with the oldest prompt selected, so ⌘⏎ answers it and Esc closes it. If another app uses the same shortcut, both respond.")
         }
         Section {
-            LabeledContent("Allow the oldest permission prompt") { Keys("⌃⌥A") }
-            LabeledContent("Deny the oldest permission prompt") { Keys("⌃⌥D") }
-            LabeledContent("Show the session that has waited longest") { Keys("⌃⌥J") }
-        } header: { Text("Prompts") } footer: {
-            Note("They work only while something is waiting, so other apps keep these keys the rest of the time. Risky commands always need a click.")
-        }
-        Section {
-            LabeledContent("Move, then open") { Keys("↑ ↓", "⏎") }
+            LabeledContent("Move, then open or show in the terminal") { Keys("↑ ↓", "⏎") }
             LabeledContent("Everything you can do with the selected row") { Keys("⌘K") }
             LabeledContent("Allow or deny the selected prompt") { Keys("⌘⏎", "⌘⌫") }
             LabeledContent("Reply to the selected session") { Keys("M") }
@@ -123,18 +107,18 @@ struct SettingsView: View {
 
     @ViewBuilder private var healthSummary: some View {
         let missing = Self.hookKeys.filter { model.health?[$0.0] as? String == "missing" }
-        Callout(tint: model.health == nil ? .clear : missing.isEmpty && model.health?["error"] == nil ? .green : .orange) {
+        Callout(tint: model.health == nil ? .clear : missing.isEmpty && model.health?["error"] == nil ? Tone.done : Tone.waiting) {
             if model.health == nil {
                 ProgressView().controlSize(.small)
                 Text("Checking hooks…").foregroundStyle(.secondary)
             } else if model.health?["error"] != nil {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.waiting)
                 Text("Couldn't check the hooks. Is python3 installed?")
             } else if missing.isEmpty {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.done)
                 Text("All hooks working")
             } else {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.waiting)
                 Text("Needs a repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
                 Spacer()
                 Button("Repair setup") { Task { await model.repairHooks() } }.controlSize(.small)
@@ -400,6 +384,71 @@ enum BarStyle: String, CaseIterable, Identifiable {
         case .withSessions: return "Closest limit · running sessions"
         case .ringOnly: return "Ring only"
         }
+    }
+}
+
+/// Records the next key press as the open-menu shortcut.
+private struct ShortcutRecorder: View {
+    let model: AppModel
+    @AppStorage(MenuHotkey.key) private var stored = ""
+    @State private var recording = false
+    @State private var previous: MenuHotkey?
+    @State private var monitor: Any?
+    @State private var problem: String?
+
+    private var current: MenuHotkey? { MenuHotkey(stored: stored) }
+
+    var body: some View {
+        LabeledContent("Open the menu") {
+            HStack(spacing: 8) {
+                if recording {
+                    Text("Press a shortcut…").foregroundStyle(.secondary)
+                    Button("Cancel") { stop(restore: true) }
+                } else {
+                    if let current { Keycap(current.title) } else { Text("Off").foregroundStyle(.secondary) }
+                    Button(current == nil ? "Record Shortcut" : "Change…") { start() }
+                    if current != nil { Button("Turn Off") { problem = nil; model.setMenuHotkey(nil) } }
+                }
+            }
+        }
+        .onDisappear { if recording { stop(restore: true) } }
+        if let problem {
+            Label(problem, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(Tone.warnText)
+        } else if current != nil && model.menuHotkeyFailed {
+            Label("macOS wouldn't let Agent Deck use \(current?.title ?? "it"), so it does nothing. Pick another one.", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout).foregroundStyle(Tone.warnText)
+        }
+    }
+
+    private func start() {
+        problem = nil
+        previous = current
+        recording = true
+        model.pauseMenuHotkey()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == 53 { stop(restore: true); return nil }   // Esc
+            guard let key = MenuHotkey(event: e) else {
+                problem = "Use ⌃ or ⌥ with a key, or ⌘⇧ with a key."
+                NSSound.beep()
+                return nil
+            }
+            if key.takenBySystem {
+                problem = "macOS already uses \(key.title). Pick another one."
+                NSSound.beep()
+                return nil
+            }
+            problem = nil
+            model.setMenuHotkey(key)
+            stop(restore: false)
+            return nil
+        }
+    }
+
+    private func stop(restore: Bool) {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if restore { model.setMenuHotkey(previous); problem = nil }
+        recording = false
     }
 }
 

@@ -162,7 +162,7 @@ struct DetailsView: View {
         HStack {
             Label(name, systemImage: symbol).lineLimit(1)
             Spacer()
-            if dot { Circle().fill(Color.orange).frame(width: 7, height: 7).accessibilityLabel("Waiting for you") }
+            if dot { Circle().fill(Tone.waiting).frame(width: 7, height: 7).accessibilityLabel("Waiting for you") }
             if let trailing { Text(trailing).monospacedDigit().foregroundStyle(.secondary) }
         }
         .tag(item)
@@ -229,7 +229,7 @@ struct SessionRow: Identifiable {
     }
     var statusColor: Color {
         guard let s = live, !s.isLeftover else { return .secondary }
-        switch s.state { case .busy: return .blue; case .idle: return .secondary; case .blocked: return .orange }
+        switch s.state { case .busy: return Tone.working; case .idle: return .secondary; case .blocked: return Tone.waiting }
     }
 }
 
@@ -342,16 +342,13 @@ struct SessionsTab: View {
     }
 
     private var cards: some View {
-        let grid = VStack(alignment: .leading, spacing: 0) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
-                ForEach(model.approvals) {
-                    ApprovalCard(model: model, request: $0, roomy: true)
-                        .transition(ApprovalCard.transition(model.outcomes[$0.id], reduced: reduceMotion))
-                }
+        let grid = LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
+            ForEach(model.approvals) {
+                ApprovalCard(model: model, request: $0, roomy: true)
+                    .transition(ApprovalCard.transition(model.outcomes[$0.id], reduced: reduceMotion))
             }
-            .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
-            HotkeyHint(model: model).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
         }
+        .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
         return ViewThatFits(in: .vertical) { grid; ScrollView { grid } }
             .layoutPriority(1)
     }
@@ -988,7 +985,7 @@ struct UsageChart: View {
                     .frame(height: 220)
             } else {
                 Chart {
-                    RuleMark(y: .value("Alert", Notifier.warnAt)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    RuleMark(y: .value("Alert", Notifier.warnAt)).foregroundStyle(Tone.waiting.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                         .annotation(position: .top, alignment: .leading) { Text("Warn at \(Int(Notifier.warnAt))%").font(.subheadline).foregroundStyle(.secondary) }
                     ForEach(resets, id: \.self) { r in
                         // With a forecast drawn, "reset" would sit on its "100% at …" label, so the line goes unlabelled.
@@ -1010,11 +1007,11 @@ struct UsageChart: View {
                     if let eta, let last = points.last {
                         ForEach([(last.at, last.percent), (eta, 100.0)], id: \.0) { at, pct in
                             LineMark(x: .value("Time", at), y: .value("Used", pct), series: .value("Series", "Pace"))
-                                .foregroundStyle(Color.orange)
+                                .foregroundStyle(Tone.waiting)
                                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                         }
                         PointMark(x: .value("Time", eta), y: .value("Used", 100))
-                            .foregroundStyle(Color.orange)
+                            .foregroundStyle(Tone.waiting)
                             .annotation(position: .leading) {
                                 Text("100% at \(Fmt.clock(eta))").font(.subheadline.weight(.medium)).foregroundStyle(Tone.warnText)
                             }

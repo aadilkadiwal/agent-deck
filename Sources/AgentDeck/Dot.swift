@@ -28,6 +28,8 @@ struct Dot: View {
             }
         }
         .frame(width: size, height: size)
+        // Dot's body is graphite in both appearances, so its colours always take their dark-mode values.
+        .environment(\.colorScheme, .dark)
         .onChange(of: mood) { since = Date() }
         .accessibilityHidden(true)
     }
@@ -53,15 +55,15 @@ struct Dot: View {
 
     static func rim(_ percent: Double?) -> Color {
         let p = percent ?? 0
-        return p >= LimitWindow.full ? .red : p >= Notifier.warnAt ? .orange : Color(white: 0.72)
+        return p >= LimitWindow.full ? Tone.risky : p >= Notifier.warnAt ? Tone.waiting : Color(white: 0.72)
     }
 
     static func moodColor(_ mood: DotMood) -> Color {
         switch mood {
-        case .needs, .warn, .runsOut: .orange
-        case .risky, .reached: .red
-        case .done, .back: .green
-        case .working: .blue
+        case .needs, .warn, .runsOut: Tone.waiting
+        case .risky, .reached: Tone.risky
+        case .done, .back: Tone.done
+        case .working: Tone.working
         case .idle: .secondary
         }
     }
@@ -151,7 +153,7 @@ private struct DotFace {
         }
         if mood == .working {
             let start = still ? 0.05 : (t / Motion.pulse).truncatingRemainder(dividingBy: 1)
-            body.stroke(arc(from: start, to: start + 0.22), with: .color(.blue), style: StrokeStyle(lineWidth: 8, lineCap: .round))
+            body.stroke(arc(from: start, to: start + 0.22), with: .color(Tone.working), style: StrokeStyle(lineWidth: 8, lineCap: .round))
         }
         body.fill(Path(ellipseIn: CGRect(x: 16, y: 16, width: 88, height: 88)),
                   with: .radialGradient(Gradient(colors: [Color(red: 0.23, green: 0.25, blue: 0.29), Color(red: 0.11, green: 0.12, blue: 0.15),
@@ -237,7 +239,7 @@ private struct DotFace {
         switch mood {
         case .needs, .risky:
             let y = 20 + kf(t, mood == .risky ? 0.9 : 1.4, [(0, 0), (0.5, -3), (1, 0)])
-            ctx.fill(Path(ellipseIn: CGRect(x: 85, y: y - 13, width: 26, height: 26)), with: .color(mood == .risky ? .red : .orange))
+            ctx.fill(Path(ellipseIn: CGRect(x: 85, y: y - 13, width: 26, height: 26)), with: .color(mood == .risky ? Tone.risky : Tone.waiting))
             ctx.draw(Text("!").font(.system(size: 17, weight: .heavy))
                         .foregroundColor(mood == .risky ? .white : Color(red: 0.1, green: 0.07, blue: 0.02)),
                      at: CGPoint(x: 98, y: y))
@@ -248,7 +250,7 @@ private struct DotFace {
                 let phase = t + Double(i) * 0.3
                 let a = kf(phase, 1.2, [(0, 0), (0.4, 1), (1, 0)])
                 let s = kf(phase, 1.2, [(0, 0.4), (0.4, 1), (1, 0.6)])
-                ctx.fill(star(cx, cy, r * s), with: .color(Color.green.opacity(a)))
+                ctx.fill(star(cx, cy, r * s), with: .color(Tone.done.opacity(a)))
             }
         case .warn:
             let a = kf(t, 1.6, [(0, 0), (0.3, 1), (1, 0)])
@@ -261,8 +263,8 @@ private struct DotFace {
         case .runsOut:
             let face = Path(ellipseIn: CGRect(x: 85, y: 7, width: 26, height: 26))
             ctx.fill(face, with: .color(Color(red: 0.11, green: 0.13, blue: 0.15)))
-            ctx.stroke(face, with: .color(.orange), lineWidth: 3)
-            line(&ctx, [(98, 13), (98, 20), (103, 23)], 3, color: .orange)
+            ctx.stroke(face, with: .color(Tone.waiting), lineWidth: 3)
+            line(&ctx, [(98, 13), (98, 20), (103, 23)], 3, color: Tone.waiting)
         case .reached:
             for (i, (x, y, s)) in [(88.0, 30.0, 16.0), (100.0, 18.0, 12.0)].enumerated() {
                 let phase = t + Double(i) * 0.8

@@ -31,11 +31,12 @@ struct StateDot: View {
             let phase = loops ? Motion.beat(tl.date) : 0
             ZStack {
                 switch state {
-                case .busy: Circle().fill(Color.blue).opacity(1 - 0.45 * (1 - cos(2 * .pi * phase)) / 2)
+                case .busy: Circle().fill(Tone.working).opacity(1 - 0.45 * (1 - cos(2 * .pi * phase)) / 2)
                 case .idle: Circle().strokeBorder(Color.secondary, lineWidth: 1.5)
                 case .blocked:
-                    Circle().fill(Color.orange).scaleEffect(1 + 0.9 * phase).opacity(loops ? 0.5 * (1 - phase) : 0)
-                    Circle().fill(Color.orange)
+                    Circle().fill(Tone.waiting).scaleEffect(1 + 0.9 * phase).opacity(loops ? 0.5 * (1 - phase) : 0)
+                    Circle().fill(Tone.waiting).padding(1.5)
+                    Circle().strokeBorder(Tone.waiting, lineWidth: 1.2).padding(-1.5)
                 case nil: Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1.5)
                 }
             }
@@ -54,7 +55,7 @@ struct StateDot: View {
 
 struct Pill: View {
     let text: String
-    var color: Color = .orange
+    var color: Color = Tone.waiting
     var body: some View {
         Text(text).font(.subheadline.weight(.bold)).foregroundStyle(color)
             .padding(.horizontal, 5).padding(.vertical, 1)
@@ -78,7 +79,7 @@ struct ContextBar: View {
     }
 
     static let warnAt = 70
-    static func tint(_ percent: Int) -> Color { percent >= 90 ? .red : percent >= warnAt ? .orange : .secondary }
+    static func tint(_ percent: Int) -> Color { percent >= 90 ? Tone.risky : percent >= warnAt ? Tone.waiting : .secondary }
 }
 
 struct IconButton: View {
