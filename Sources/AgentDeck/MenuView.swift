@@ -7,7 +7,6 @@ struct MenuView: View {
     @State private var confirm: Confirm?
     @State private var showingNew = false
     @State private var tab = ListTab.running
-    @State private var tabMinHeight: CGFloat = 0
     @State private var search = ""
     @State private var searchAsked = false
     @State private var collapsed = Set<String>()
@@ -206,7 +205,7 @@ struct MenuView: View {
             }
             .onDisappear {
                 StatusMenu.escape = nil
-                model.menuOpen = false; search = ""; searchAsked = false; confirm = nil; showingNew = false; tabMinHeight = 0
+                model.menuOpen = false; search = ""; searchAsked = false; confirm = nil; showingNew = false
                 only = nil; previewing = nil; cursor = nil; actionsOpen = false; allClear = false; hoveredRow = nil
             }
             .onChange(of: urgent) { was, now in
@@ -536,14 +535,11 @@ struct MenuView: View {
             }
             .frame(maxHeight: heights.sessions)
             .fixedSize(horizontal: false, vertical: true)
-            // Switching tabs keeps the height the list had, so the panel doesn't jump; a taller tab still grows it.
-            .frame(minHeight: tabMinHeight > 0 ? min(tabMinHeight, heights.sessions) : nil, alignment: .top)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sessionsHeight = $0 }
             .onDisappear { sessionsHeight = 0 }
         }
         .animation(Motion.spring(reduced: reduceMotion), value: showSearch)
-        .onChange(of: tab) { tabMinHeight = sessionsHeight; cursor = nil }
-        .onChange(of: tabsShown) { tabMinHeight = 0 }
+        .onChange(of: tab) { cursor = nil }
     }
 
     @ViewBuilder private func runningList(_ running: [LiveSession], grouped isGrouped: Bool) -> some View {
@@ -1239,7 +1235,7 @@ struct DeleteConfirm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(title).fixedSize(horizontal: false, vertical: true)
+                Text(title).fixedSize(horizontal: false, vertical: true).frame(minWidth: 160, alignment: .leading)
                     .help("The conversation, scratchpad, undo backups and anything else Claude Code keeps for this session")
                 Spacer()
                 Button("Cancel", action: onDone)

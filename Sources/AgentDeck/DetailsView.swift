@@ -88,7 +88,9 @@ struct DetailsView: View {
                     ToolbarItem(placement: .primaryAction) {
                         TextField("Search  ⌘F", text: $search)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 220)
+                            // The toolbar drops an item whose ideal width doesn't fit, which hid search
+                            // at the minimum window size with the side panel open.
+                            .frame(minWidth: 120, idealWidth: 160, maxWidth: 220)
                             .focused($searchFocused)
                     }
                 }
@@ -340,7 +342,7 @@ struct SessionsTab: View {
     }
 
     private var cards: some View {
-        ScrollView {
+        let grid = VStack(alignment: .leading, spacing: 0) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], alignment: .leading, spacing: 12) {
                 ForEach(model.approvals) {
                     ApprovalCard(model: model, request: $0, roomy: true)
@@ -350,40 +352,45 @@ struct SessionsTab: View {
             .animation(Motion.spring(reduced: reduceMotion), value: model.approvals.map(\.id))
             HotkeyHint(model: model).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
         }
-        .layoutPriority(1)
+        return ViewThatFits(in: .vertical) { grid; ScrollView { grid } }
+            .layoutPriority(1)
     }
 
     private func controls(_ all: [SessionRow]) -> some View {
         let scoped = all.filter { project == nil || $0.folder == project }
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 16) {
-            Picker("", selection: $filter) {
-                ForEach(SessionFilter.allCases.filter { f in f == .all || f == filter || scoped.contains(where: f.matches) }) { f in
-                    Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f)
-                }
+        let empty = model.emptySessions.filter { project == nil || $0.cwd == project }
+        let filterPicker = Picker("", selection: $filter) {
+            ForEach(SessionFilter.allCases.filter { f in f == .all || f == filter || scoped.contains(where: f.matches) }) { f in
+                Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f)
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
-                let empty = model.emptySessions.filter { project == nil || $0.cwd == project }
-                if !empty.isEmpty {
-                    Button { pendingDelete = empty } label: {
-                        Label {
-                            Text("\(Fmt.count(empty.count, "empty session")) · \(Fmt.bytes(empty.reduce(0) { $0 + $1.bytes })) · Clean up")
-                        } icon: {
-                            Image(systemName: "sparkles").symbolEffect(.bounce, value: sparkle)
-                        }
-                    }
-                    .onAppear { if !reduceMotion { sparkle.toggle() } }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .help("Sessions that ended before Claude replied")
-                }
-                Spacer()
-                Picker("Last active", selection: $range) {
-                    ForEach(ActiveRange.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .fixedSize()
-            }
-            .font(.callout)
         }
+        .pickerStyle(.segmented).labelsHidden().fixedSize()
+        let cleanup = Group {
+            if !empty.isEmpty {
+                Button { pendingDelete = empty } label: {
+                    Label {
+                        Text("\(Fmt.count(empty.count, "empty session")) · \(Fmt.bytes(empty.reduce(0) { $0 + $1.bytes })) · Clean up")
+                    } icon: {
+                        Image(systemName: "sparkles").symbolEffect(.bounce, value: sparkle)
+                    }
+                }
+                .onAppear { if !reduceMotion { sparkle.toggle() } }
+                .buttonStyle(.bordered).controlSize(.small)
+                .help("Sessions that ended before Claude replied")
+            }
+        }
+        let rangePicker = Picker("Last active", selection: $range) {
+            ForEach(ActiveRange.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .fixedSize()
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) { filterPicker; cleanup; Spacer(); rangePicker }
+            VStack(alignment: .leading, spacing: 8) {
+                filterPicker
+                HStack(spacing: 16) { rangePicker; Spacer(); cleanup }
+            }
+        }
+        .font(.callout)
     }
 
     private func table(_ rows: [SessionRow], all: [SessionRow]) -> some View {
@@ -655,7 +662,7 @@ struct Inspector<Actions: View>: View {
             HStack(spacing: 8) {
                 StatusPill(row: row)
                 if let s = row.live {
-                    Text("\(s.kind == .background ? "Background" : "Terminal") · since \(Fmt.ago(s.startedAt))\(s.isOnPhone ? " · on your phone" : "")")
+                    Text("\(s.kind == .background ? "Background" : "Terminal") · open \(Fmt.span(Date().timeIntervalSince(s.startedAt)))\(s.isOnPhone ? " · on your phone" : "")")
                         .foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -679,7 +686,7 @@ struct Inspector<Actions: View>: View {
         }
         if let p = row.lastPrompt { field("Last prompt", p, lines: 3) }
         if let reply = detail?.lastReply { field("Last reply", reply, lines: 4) }
-        field("Folder", row.folder)
+        field("Folder", Fmt.shortPath(row.folder)).help(row.folder)
         if !row.branch.isEmpty { field("Branch", row.branch) }
         VStack(alignment: .leading, spacing: 2) {
             Text("Session ID").foregroundStyle(.secondary)
@@ -818,7 +825,7 @@ struct UsageTab: View {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text("Shared account").font(.body.weight(.semibold))
-                            InfoButton(text: "Everyone signed in to your Claude account shares these limits. Claude Code sends the numbers while it runs here. When nobody uses Claude on this Mac, Agent Deck asks Anthropic every ten minutes instead, so you still get warned. A rise with no reply from this Mac counts as another Mac's.")
+                            InfoButton(topic: "Shared account", text: "Everyone signed in to your Claude account shares these limits. Claude Code sends the numbers while it runs here. When nobody uses Claude on this Mac, Agent Deck asks Anthropic every ten minutes instead, so you still get warned. A rise with no reply from this Mac counts as another Mac's.")
                             Spacer()
                             Text(model.usageIsAccount ? "Read from Anthropic" : "From Claude Code on this Mac").foregroundStyle(.secondary)
                         }
@@ -832,7 +839,7 @@ struct UsageTab: View {
                         HStack {
                             Text(chartKey == "five_hour" ? "5-hour limit, last 24 hours" : "Weekly limit, last 7 days")
                                 .font(.body.weight(.semibold))
-                            InfoButton(text: "The same numbers /usage shows. They refresh every few minutes, and with every Claude Code reply on this Mac. The dashed orange line is where you're heading at your pace over the last hour (5-hour) or day (weekly). It shows up after 10 minutes of readings.")
+                            InfoButton(topic: "the usage chart", text: "The same numbers /usage shows. They refresh every few minutes, and with every Claude Code reply on this Mac. The dashed orange line is where you're heading at your pace over the last hour (5-hour) or day (weekly). It shows up after 10 minutes of readings.")
                             Spacer()
                             Picker("", selection: $chartKey) {
                                 Text("5-hour").tag("five_hour")
@@ -857,6 +864,7 @@ struct UsageTab: View {
                 } else {
                     ContentUnavailableView("No usage numbers yet", systemImage: "chart.xyaxis.line",
                                            description: Text("They show up after your next Claude Code message."))
+                        .frame(maxWidth: .infinity, minHeight: 360)
                 }
             }
             .padding(16)
@@ -878,7 +886,7 @@ struct ProjectUsageView: View {
             HStack {
                 Text(span == "five_hour" ? "Tokens by project, last 5 hours" : "Tokens by project, last 7 days")
                     .font(.body.weight(.semibold))
-                InfoButton(text: "Input, output and cache-write tokens from your transcripts. Click a project to see its sessions.")
+                InfoButton(topic: "Tokens by project", text: "Input, output and cache-write tokens from your transcripts. Click a project to see its sessions.")
                 Spacer()
                 Picker("", selection: $span) {
                     Text("5 hours").tag("five_hour")
@@ -983,9 +991,12 @@ struct UsageChart: View {
                     RuleMark(y: .value("Alert", Notifier.warnAt)).foregroundStyle(.orange.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                         .annotation(position: .top, alignment: .leading) { Text("Warn at \(Int(Notifier.warnAt))%").font(.subheadline).foregroundStyle(.secondary) }
                     ForEach(resets, id: \.self) { r in
+                        // With a forecast drawn, "reset" would sit on its "100% at …" label, so the line goes unlabelled.
                         RuleMark(x: .value("Reset", r)).foregroundStyle(Color.gray.opacity(0.45))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                            .annotation(position: .top, spacing: 2) { Text("reset").font(.caption).foregroundStyle(.secondary) }
+                            .annotation(position: .top, spacing: 2) {
+                                if eta == nil { Text("reset").font(.subheadline).foregroundStyle(.tertiary) }
+                            }
                     }
                     ForEach(pieces) { p in
                         AreaMark(x: .value("Time", p.at), y: .value("Used", p.percent), series: .value("Series", "Used \(p.segment)"))
@@ -1037,6 +1048,7 @@ struct UsageChart: View {
 
 
 struct InfoButton: View {
+    let topic: String
     let text: String
     @State private var shown = false
 
@@ -1045,7 +1057,7 @@ struct InfoButton: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .help(text)
-            .accessibilityLabel("About this")
+            .accessibilityLabel("About \(topic)")
             .popover(isPresented: $shown, arrowEdge: .bottom) {
                 Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
                     .frame(width: 280, alignment: .leading).padding(12)
@@ -1062,7 +1074,7 @@ struct UsageHeatmapView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("When you use the most, last 7 days").font(.body.weight(.semibold))
-                InfoButton(text: "Each square is one hour. The stronger the colour, the more your 5-hour limit went up in that hour. It fills in as Claude Code runs. A jump between readings more than two hours apart is left out, since it can't be pinned to one hour.")
+                InfoButton(topic: "the usage heatmap", text: "Each square is one hour. The stronger the colour, the more your 5-hour limit went up in that hour. It fills in as Claude Code runs. A jump between readings more than two hours apart is left out, since it can't be pinned to one hour.")
                 Spacer()
             }
             if m.peak <= 0 {
@@ -1090,7 +1102,7 @@ struct UsageHeatmapView: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(summary(m))
-                Text(summary(m)).font(.callout).foregroundStyle(m.limitHits > 0 ? Tone.warnText : .secondary)
+                (Text(busiest(m)).foregroundStyle(.secondary) + Text(hits(m)).foregroundStyle(Tone.warnText)).font(.callout)
             }
         }
         .padding(12)
@@ -1100,11 +1112,10 @@ struct UsageHeatmapView: View {
 
     private func heat(_ x: Double) -> Color { Color.primary.opacity(0.1 + 0.75 * x) }
 
-    private func summary(_ m: UsageHeatmap) -> String {
-        let busiest = m.busiest.map { "Busiest: \($0.day) \(hour($0.from))–\(hour($0.to))." } ?? ""
-        let hits = m.limitHits > 0 ? " You reached the 5-hour limit \(Fmt.count(m.limitHits, "time"))." : ""
-        return busiest + hits
-    }
+    private func busiest(_ m: UsageHeatmap) -> String { m.busiest.map { "Busiest: \($0.day) \(hour($0.from))–\(hour($0.to))." } ?? "" }
+    private func hits(_ m: UsageHeatmap) -> String { m.limitHits > 0 ? " You reached the 5-hour limit \(Fmt.count(m.limitHits, "time"))." : "" }
+
+    private func summary(_ m: UsageHeatmap) -> String { busiest(m) + hits(m) }
 
     private func hour(_ h: Int) -> String {
         var c = DateComponents()
