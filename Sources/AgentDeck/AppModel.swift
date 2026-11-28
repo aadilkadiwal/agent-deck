@@ -1056,14 +1056,9 @@ enum Fmt {
     static func ago(_ d: Date) -> String {
         let now = Date()
         if now.timeIntervalSince(d) < 60 { return "now" }
-        return relative.localizedString(for: d, relativeTo: now)
+        return Fmt.span(now.timeIntervalSince(d)) + " ago"
     }
 
-    private static let relative: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f
-    }()
     // Templates, not fixed formats, so the 24-hour setting is followed.
     private static let time = formatter("jmm"), dayTime = formatter("EEEjmm")
     private static func formatter(_ template: String) -> DateFormatter {

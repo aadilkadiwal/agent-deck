@@ -131,9 +131,9 @@ struct SettingsView: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("Needs a repair: \(missing.map(\.1).joined(separator: ", "))").lineLimit(1)
                 Spacer()
-                Button("Repair hooks") { Task { await model.repairHooks() } }.buttonStyle(.borderedProminent).controlSize(.small)
+                Button("Repair setup") { Task { await model.repairHooks() } }.controlSize(.small)
             }
-            Spacer(minLength: 0)
+            if missing.isEmpty || model.health?["error"] != nil { Spacer(minLength: 0) }
         }
         .font(.callout)
         .animation(Motion.fast(reduceMotion), value: missing.count)
@@ -152,7 +152,7 @@ struct SettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(r.rule).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle).help(r.rule)
-                            Text("\(r.everywhere ? "Everywhere" : Fmt.folderTitle(r.cwd)) · \(Fmt.ago(r.at))").font(.subheadline).foregroundStyle(.secondary)
+                            Text("\(r.everywhere ? "Every project" : Fmt.folderTitle(r.cwd)) · \(Fmt.ago(r.at))").font(.subheadline).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Remove") { model.removeRule(r) }
@@ -216,11 +216,11 @@ struct SettingsView: View {
 
     @ViewBuilder private var notifications: some View {
         Section {
-            Picker("Where", selection: $peekPlacement) {
+            Picker("Show alerts", selection: $peekPlacement) {
                 ForEach(PeekPlacement.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
             }
             LabeledContent("Preview") {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     ForEach(Preview.allCases, id: \.self) { p in
                         Button { p.show() } label: { Label(p.title, systemImage: "play.fill") }
                             .help("Shows a sample \(p.title.lowercased()) alert with its sound")
@@ -229,7 +229,7 @@ struct SettingsView: View {
                 .controlSize(.small)
                 .disabled(peekPlacement == PeekPlacement.banners.rawValue)
             }
-        } header: { Text("Show alerts") } footer: {
+        } header: { Text("Alerts") } footer: {
             Note("Without a notch they drop from Dot in the menu bar. They never show in screen sharing. In a Focus only prompts get through, quietly. When you're away, they arrive as macOS notifications.")
         }
         Section {
@@ -274,7 +274,7 @@ struct SettingsView: View {
                     .animation(Motion.fast(reduceMotion), value: old.count)
                 Spacer()
                 if confirmCleanup {
-                    ConfirmRow(message: "Move them to the Trash?", confirmTitle: "Delete", destructive: true,
+                    ConfirmRow(message: "Move them to the Trash?", confirmTitle: "Clean up", destructive: true,
                                cancel: { confirmCleanup = false }) { model.delete(old); confirmCleanup = false }
                 } else {
                     Button("Clean up…", role: .destructive) { confirmCleanup = true }.disabled(old.isEmpty)
@@ -288,10 +288,12 @@ struct SettingsView: View {
     @ViewBuilder private var health: some View {
         Section {
             ForEach(Self.hookKeys, id: \.0) { key, title in healthRow(title, model.health?[key] as? String) }
-            HStack {
-                if model.health?["error"] != nil { Text("Couldn't run the check. Is python3 installed?").foregroundStyle(Tone.warnText) }
-                Spacer()
-                Button("Repair hooks") { Task { await model.repairHooks() } }
+            if !hooksBroken || model.health?["error"] != nil {
+                HStack {
+                    if model.health?["error"] != nil { Text("Couldn't run the check. Is python3 installed?").foregroundStyle(Tone.warnText) }
+                    Spacer()
+                    Button("Repair setup") { Task { await model.repairHooks() } }
+                }
             }
         } header: { Text("Health") } footer: {
             Note("Repair puts Agent Deck's hooks back and leaves yours alone. If the status line is missing, run install.sh again.")
@@ -326,7 +328,7 @@ struct StorageBar: View {
                             .frame(width: max(p.bytes > 0 ? 3 : 0, (g.size.width - 4) * CGFloat(p.bytes) / CGFloat(total)))
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.inner))
             }
             .frame(height: 12)
             HStack(spacing: 16) {
@@ -394,11 +396,7 @@ private struct Keys: View {
     init(_ keys: String...) { self.keys = keys }
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(keys, id: \.self) { k in
-                Text(k).font(.callout.monospaced()).padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.12)))
-            }
+            ForEach(keys, id: \.self) { Keycap($0) }
         }
     }
 }
