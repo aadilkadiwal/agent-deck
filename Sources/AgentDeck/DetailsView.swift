@@ -46,7 +46,7 @@ struct DetailsView: View {
         NavigationSplitView {
             List(selection: selection) {
                 sidebarRow(.tab(.sessions), "All sessions", "list.bullet", trailing: "\(model.live.count + model.closed.count)")
-                sidebarRow(.tab(.waiting), "Waiting", "exclamationmark.circle", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
+                sidebarRow(.tab(.waiting), "Waiting", "exclamationmark.circle.fill", trailing: waitingCount > 0 ? "\(waitingCount)" : nil, dot: waitingCount > 0)
                 sidebarRow(.tab(.usage), "Usage", "chart.xyaxis.line")
                 if !projects.isEmpty {
                     Section("Projects") {
@@ -125,16 +125,16 @@ struct DetailsView: View {
 
     private var sidebarHeader: some View {
         let running = model.live.filter { !$0.isLeftover }.count
-        return HStack(spacing: 10) {
+        return HStack(spacing: 12) {
             Dot(mood: model.mood(for: model.closestWindow), percent: model.shownPercent, size: 32, celebrate: false)
             VStack(alignment: .leading, spacing: 1) {
                 Text(running == 0 ? "Nothing running" : "\(running) running").font(.callout.weight(.semibold))
                 Text(waitingCount == 0 ? "Nothing waiting" : "\(waitingCount) waiting for you")
-                    .font(.subheadline).foregroundStyle(waitingCount == 0 ? Color.secondary : .orange)
+                    .font(.subheadline).foregroundStyle(waitingCount == 0 ? Color.secondary : Tone.warnText)
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
+        .padding(.horizontal, 16).padding(.vertical, 8)
         .accessibilityElement(children: .combine)
     }
 
@@ -150,7 +150,7 @@ struct DetailsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(.horizontal, 16).padding(.vertical, 12)
             .help("Open Settings → Health")
         }
     }
@@ -273,6 +273,7 @@ struct SessionsTab: View {
     @State private var pendingDelete: [HistorySession]?
     @State private var renaming: SessionRow?
     @State private var stopping: LiveSession?
+    @State private var compacting: LiveSession?
     @State private var inspectorHidden = false
     @State private var sortOrder = [KeyPathComparator(\SessionRow.lastActive, order: .reverse)]
     @State private var sparkle = false
@@ -302,7 +303,7 @@ struct SessionsTab: View {
         let all = allRows
         let rows = visible(all)
         let selectedRow = selection.count == 1 ? all.first { selection.contains($0.id) } : nil
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if waitingOnly {
                 let carded = Set(model.approvals.map(\.sessionId))
                 let uncarded = rows.filter { !carded.contains($0.id) }
@@ -317,7 +318,7 @@ struct SessionsTab: View {
         }
         .padding(12)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if pendingDelete != nil || renaming != nil || stopping != nil || selection.count > 1 {
+            if pendingDelete != nil || renaming != nil || stopping != nil || compacting != nil || selection.count > 1 {
                 bottomBar
                     .confirmBar()
                     .padding([.horizontal, .bottom], 12)
@@ -354,8 +355,8 @@ struct SessionsTab: View {
 
     private func controls(_ all: [SessionRow]) -> some View {
         let scoped = all.filter { project == nil || $0.folder == project }
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 16) {
             Picker("", selection: $filter) {
                 ForEach(SessionFilter.allCases.filter { f in f == .all || f == filter || scoped.contains(where: f.matches) }) { f in
                     Text("\(f.rawValue) \(scoped.filter(f.matches).count)").tag(f)
@@ -372,7 +373,7 @@ struct SessionsTab: View {
                         }
                     }
                     .onAppear { if !reduceMotion { sparkle.toggle() } }
-                    .buttonStyle(.bordered).controlSize(.small).tint(.orange)
+                    .buttonStyle(.bordered).controlSize(.small)
                     .help("Sessions that ended before Claude replied")
                 }
                 Spacer()
@@ -426,7 +427,7 @@ struct SessionsTab: View {
             }
             .width(min: 96, ideal: 108)
             .customizationID("duration")
-            TableColumn("Session ID") { r in Text(r.shortId).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary) }
+            TableColumn("Session ID") { r in Text(r.shortId).font(.subheadline.monospaced()).foregroundStyle(.secondary) }
                 .width(80)
                 .customizationID("sessionId")
                 .defaultVisibility(.hidden)
@@ -479,7 +480,7 @@ struct SessionsTab: View {
             ContentUnavailableView.search(text: search)
         } else if waitingOnly {
             ContentUnavailableView {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     Dot(mood: .back, percent: model.shownPercent, size: 64, extras: false)
                     Text("Nothing is waiting for you")
                 }
@@ -502,6 +503,9 @@ struct SessionsTab: View {
         HStack {
             if let pending = pendingDelete {
                 DeleteConfirm(model: model, sessions: pending) { pendingDelete = nil }
+            } else if let s = compacting {
+                ConfirmRow(message: "Compact \(model.displayName(s))? Claude keeps a summary and lets go of the details. Nothing is deleted.",
+                           confirmTitle: "Compact", cancel: { compacting = nil }) { compacting = nil; model.compact(s) }
             } else if let s = stopping {
                 ConfirmRow(message: s.state == .blocked ? "\(model.displayName(s)) is waiting for your answer. Stop it anyway?"
                                     : s.isOnPhone ? "Stop \(model.displayName(s))? It closes on your phone too." : "Stop \(model.displayName(s))?",
@@ -544,24 +548,28 @@ struct SessionsTab: View {
         if let s = r.live {
             if includeOpen { Button(s.kind == .interactive ? "Show its window" : "Open in \(TerminalApp.current.title)") { model.open(s) } }
             if s.kind == .interactive {
-                Button("Compact context") { model.compact(s) }
+                Button("Compact context…") { compacting = s }
                     .disabled(s.state != .idle || model.typingBlockers[s.sessionId] != nil)
             }
-            if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keep running)") { model.phoneOff(s) } }
-            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in \(TerminalApp.current.title) and phone") { model.phoneOn(s) } }
+            if s.isOnPhone, s.kind == .interactive { Button("Disconnect phone (keeps running)") { model.phoneOff(s) } }
+            if !s.isOnPhone { Button(s.kind == .interactive ? "Also open on phone" : "Open in \(TerminalApp.current.title) and on your phone") { model.phoneOn(s) } }
             if let url = s.phoneURL {
                 Button("Copy phone link") { copy(url.absoluteString) }
                 Button("Open on claude.ai") { NSWorkspace.shared.open(url) }
             }
-            Button(s.isLeftover ? "Remove from list…" : "Stop…") {
-                if s.isLeftover || s.state == .idle { model.stop(s) } else { stopping = s }
-            }
         } else if let h = r.saved {
             if includeOpen { Button("Resume in \(TerminalApp.current.title)") { model.resumeInTerminal(h) } }
-            Button("Delete…", role: .destructive) { pendingDelete = [h] }
             Button("Show file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([h.fileURL]) }
         }
         Button("Copy session ID") { copy(r.id) }
+        Divider()
+        if let s = r.live {
+            Button(s.isLeftover ? "Remove from list" : s.stopAsksFirst ? "Stop…" : "Stop", role: .destructive) {
+                if s.stopAsksFirst { stopping = s } else { model.stop(s) }
+            }
+        } else if let h = r.saved {
+            Button("Delete…", role: .destructive) { pendingDelete = [h] }
+        }
     }
 
     private func open(_ r: SessionRow) {
@@ -593,7 +601,7 @@ struct Inspector<Actions: View>: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 16) {
                     header
                     Picker("", selection: $page) {
                         Text("Info").tag("info")
@@ -609,7 +617,7 @@ struct Inspector<Actions: View>: View {
                     Color.clear.frame(height: 1).id("end")
                 }
                 .font(.callout)
-                .padding(14)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             // Keyed on activity too, so a running session's last reply stays current.
@@ -682,7 +690,7 @@ struct Inspector<Actions: View>: View {
             }
         }
         if let url = row.live?.phoneURL, let qr = QRCode.image(url.absoluteString) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(nsImage: qr).interpolation(.none).resizable().frame(width: 84, height: 84)
                 Text("Scan to open on your phone").font(.subheadline).foregroundStyle(.secondary)
             }
@@ -752,7 +760,7 @@ struct ConversationView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f.path)])
                 } label: {
                     HStack(spacing: 8) {
-                        Text(f.created ? "A" : "M").foregroundStyle(f.created ? .green : .orange).frame(width: 10)
+                        Text(f.created ? "A" : "M").foregroundStyle(f.created ? Tone.okText : Tone.warnText).frame(width: 10)
                         Text(relative(f.path)).lineLimit(1).truncationMode(.middle)
                     }
                     .font(.subheadline.monospaced())
@@ -772,7 +780,7 @@ struct ConversationView: View {
 
 private struct TightLabel: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) { configuration.icon.font(.system(size: 8, weight: .semibold)); configuration.title }
+        HStack(spacing: 4) { configuration.icon.font(.system(size: 9, weight: .semibold)); configuration.title }
     }
 }
 
@@ -796,18 +804,18 @@ struct UsageTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 if let u = model.usage {
                     HStack(alignment: .center, spacing: 16) {
                         Dot(mood: model.mood(for: model.closestWindow), percent: model.shownPercent, size: 44, celebrate: false)
-                        VStack(spacing: 6) {
+                        VStack(spacing: 8) {
                             ForEach(u.windows) { w in Meter(window: w, forecast: model.forecast(w)).font(.callout) }
                         }
                         .frame(maxWidth: 460)
                         Spacer(minLength: 0)
                     }
 
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text("Shared account").font(.body.weight(.semibold))
                             InfoButton(text: "Everyone signed in to your Claude account shares these limits. Claude Code sends the numbers while it runs here. When nobody uses Claude on this Mac, Agent Deck asks Anthropic every ten minutes instead, so you still get warned. A rise with no reply from this Mac counts as another Mac's.")
@@ -818,9 +826,9 @@ struct UsageTab: View {
                         else { Text("Nobody on your account used it in the last hour.").foregroundStyle(.secondary) }
                     }
                     .padding(12)
-                    .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.primary.opacity(0.05)))
 
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text(chartKey == "five_hour" ? "5-hour limit, last 24 hours" : "Weekly limit, last 7 days")
                                 .font(.body.weight(.semibold))
@@ -838,7 +846,7 @@ struct UsageTab: View {
                             .id(chartKey)
                     }
                     .padding(12)
-                    .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.primary.opacity(0.05)))
 
                     UsageHeatmapView(samples: model.samples)
 
@@ -851,7 +859,7 @@ struct UsageTab: View {
                                            description: Text("They show up after your next Claude Code message."))
                 }
             }
-            .padding(20)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -893,7 +901,7 @@ struct ProjectUsageView: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.primary.opacity(0.05)))
         .task(id: span) {
             entries = nil
             let since = Date().addingTimeInterval(span == "five_hour" ? -5 * 3600 : -7 * 86400)
@@ -904,7 +912,7 @@ struct ProjectUsageView: View {
 
     private func bar(_ e: ProjectUsage.Entry, share: Double) -> some View {
         Button { pick(e.folder) } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Text(Fmt.folderTitle(e.folder)).lineLimit(1).truncationMode(.middle)
                     .frame(width: 150, alignment: .leading)
                 GeometryReader { g in
@@ -1051,7 +1059,7 @@ struct UsageHeatmapView: View {
 
     var body: some View {
         let m = map
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("When you use the most, last 7 days").font(.body.weight(.semibold))
                 InfoButton(text: "Each square is one hour. The stronger the colour, the more your 5-hour limit went up in that hour. It fills in as Claude Code runs. A jump between readings more than two hours apart is left out, since it can't be pinned to one hour.")
@@ -1082,11 +1090,11 @@ struct UsageHeatmapView: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(summary(m))
-                Text(summary(m)).font(.callout).foregroundStyle(m.limitHits > 0 ? Color.orange : .secondary)
+                Text(summary(m)).font(.callout).foregroundStyle(m.limitHits > 0 ? Tone.warnText : .secondary)
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.secondary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: Radius.panel).fill(Color.primary.opacity(0.05)))
         .task(id: "\(samples.count)-\(samples.last?.at.timeIntervalSince1970 ?? 0)") { map = UsageHeatmap.compute(samples) }
     }
 

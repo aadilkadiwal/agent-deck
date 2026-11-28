@@ -91,6 +91,7 @@ enum StatusMenu {
     private static var content: Host<MenuView>?
     private static var monitors: [Any] = []
     private static var observers: [NSObjectProtocol] = []
+    static var escape: (() -> Void)?
     static private(set) var available: CGFloat = 800
 
     static func install(_ model: AppModel) {
@@ -275,7 +276,7 @@ private final class MenuAction: NSObject {
 /// Borderless panels can't become key by default; the dropdown needs keyboard focus.
 private final class MenuPanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override func cancelOperation(_ sender: Any?) { StatusMenu.close() }
+    override func cancelOperation(_ sender: Any?) { if let escape = StatusMenu.escape { escape() } else { StatusMenu.close() } }
 }
 
 final class Host<Content: View>: NSHostingView<Content> {

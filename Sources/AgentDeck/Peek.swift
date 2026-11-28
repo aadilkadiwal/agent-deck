@@ -20,7 +20,7 @@ struct PeekAlert {
         var word: String {
             switch self {
             case .needs: "Waiting for you"
-            case .risky: "Careful"
+            case .risky: "Risky"
             case .done: "Done"
             case .warn: "Close to the limit"
             case .runsOut: "Running out"
@@ -175,7 +175,7 @@ enum Peek {
             sound.play()
         }
         NSAccessibility.post(element: panel, notification: .announcementRequested,
-                             userInfo: [.announcement: "\(alert.kind.word). \(alert.title)", .priority: NSAccessibilityPriorityLevel.high.rawValue])
+                             userInfo: [.announcement: "\(alert.tag ?? alert.kind.word). \(alert.title)", .priority: NSAccessibilityPriorityLevel.high.rawValue])
         Task {
             withAnimation(.easeOut(duration: 0.14)) { state.wide = true }
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -326,17 +326,17 @@ private struct PeekView: View {
             HStack(alignment: .center, spacing: 12) {
                 Dot(mood: a.kind.mood, percent: state.percent, size: 56, celebrate: a.celebrate)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text((a.tag ?? a.kind.word).uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(color)
-                    Text(a.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(3)
+                    Text((a.tag ?? a.kind.word).uppercased()).font(PeekFont.eyebrow).tracking(0.6).foregroundStyle(color)
+                    Text(a.title).font(PeekFont.title).foregroundStyle(.white).lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                     if let meta = a.meta {
-                        Text(meta).font(.system(size: 11)).foregroundStyle(Color(white: 0.62)).lineLimit(2)
+                        Text(meta).font(PeekFont.meta).foregroundStyle(Color(white: 0.62)).lineLimit(2)
                     }
                 }
                 Spacer(minLength: 0)
             }
             if let code = a.code, !code.isEmpty {
-                Text(code).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color(white: 0.88)).lineLimit(4)
+                Text(code).font(PeekFont.code).foregroundStyle(Color(white: 0.88)).lineLimit(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 11).padding(.vertical, 9)
                     .background(Color(red: 0.086, green: 0.094, blue: 0.114), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -345,11 +345,11 @@ private struct PeekView: View {
             }
             if !a.lines.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(a.lines, id: \.self) { Text($0).font(.system(size: 12)).foregroundStyle(Color(white: 0.78)) }
+                    ForEach(a.lines, id: \.self) { Text($0).font(PeekFont.line).foregroundStyle(Color(white: 0.78)) }
                 }
             }
             if let done = state.doneText {
-                Label(done, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(Color(white: 0.7))
+                Label(done, systemImage: "checkmark.circle.fill").font(PeekFont.line).foregroundStyle(Color(white: 0.7))
                     .symbolRenderingMode(.multicolor)
             } else if !a.actions.isEmpty {
                 HStack(spacing: 8) {
@@ -383,16 +383,27 @@ private struct PeekView: View {
 
 private struct PeekButton: ButtonStyle {
     let style: PeekAlert.Action.Style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(PeekFont.button)
             .lineLimit(1)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 7)
             .foregroundStyle(style == .primary ? Color.black : style == .danger ? Color(red: 1, green: 0.54, blue: 0.5) : .white)
             .background(Capsule().fill(style == .primary ? Color(white: 0.95) : style == .danger ? Color(red: 0.23, green: 0.08, blue: 0.07) : Color(white: 0.14)))
             .opacity(configuration.isPressed ? 0.8 : 1)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
             .contentShape(Capsule())
     }
+}
+
+/// The alert sits on its own dark surface outside the menu, so it keeps fixed sizes instead of text styles.
+enum PeekFont {
+    static let eyebrow = Font.system(size: 11, weight: .bold)
+    static let title = Font.system(size: 14, weight: .semibold)
+    static let line = Font.system(size: 12)
+    static let button = Font.system(size: 12, weight: .semibold)
+    static let meta = Font.system(size: 11)
+    static let code = Font.system(size: 11, design: .monospaced)
 }

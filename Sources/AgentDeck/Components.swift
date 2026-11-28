@@ -89,12 +89,12 @@ struct IconButton: View {
     var dimmed = false
     let action: () -> Void
     var body: some View {
-        let color = tint ?? (on ? Color.accentColor : nil)
+        let color = tint ?? (on ? Color.primary : nil)
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 12))
                 .frame(width: 28, height: 24)
                 .foregroundStyle(color ?? .secondary)
-                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(color?.opacity(0.15) ?? .clear))
+                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(color?.opacity(0.12) ?? .clear))
         }
         .buttonStyle(.borderless)
         .disabled(dimmed)
@@ -177,7 +177,7 @@ struct HoverRow<Content: View>: View {
     var body: some View {
         let row = HStack(spacing: 8) { content }
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: Radius.row).fill(hover || focused || selected ? Color.primary.opacity(0.07) : .clear))
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(hover || focused || selected ? Color.primary.opacity(0.08) : .clear))
             .overlay {
                 if focused || selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.5) }
             }
@@ -288,7 +288,9 @@ struct ConfirmRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(message).fixedSize(horizontal: false, vertical: true)
+            // The floor keeps the window's minimum-size pass from wrapping it one word per line,
+            // which made Details taller than its window.
+            Text(message).fixedSize(horizontal: false, vertical: true).frame(minWidth: 160, alignment: .leading)
             Spacer()
             Button("Cancel", action: cancel)
             if destructive {
@@ -305,7 +307,7 @@ extension View {
         font(.callout)
             .controlSize(.small)
             .padding(8)
-            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
     }
 }
 
@@ -342,7 +344,7 @@ struct LastHourBar: View {
             let sessions = parts.filter { $0.id != "others" && $0.id != "mac" }.count
             let others = parts.contains { $0.id == "others" }
             let open = expanded || !collapsible
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button {
                     withAnimation(Motion.snappy(reduceMotion)) { expanded.toggle() }
                 } label: {
@@ -374,7 +376,7 @@ struct LastHourBar: View {
                 .frame(height: 6)
                 .background(Capsule().fill(Color.primary.opacity(0.12)))
                 ForEach(parts.prefix(4)) { p in
-                    HStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Circle().fill(p.color).frame(width: 6, height: 6)
                         Text(p.name).lineLimit(1).truncationMode(.tail)
                         Spacer(minLength: 8)
@@ -414,4 +416,25 @@ struct LimitStopLine: View {
         }
         .font(.subheadline)
     }
+}
+
+struct Keycap: View {
+    let key: String
+    var onHighlight = false
+    init(_ key: String, onHighlight: Bool = false) { self.key = key; self.onHighlight = onHighlight }
+
+    var body: some View {
+        let ink = onHighlight ? Color.white : Color.primary
+        Text(key).font(.subheadline.monospaced())
+            .foregroundStyle(onHighlight ? Color.white : .secondary)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 5).fill(ink.opacity(onHighlight ? 0.18 : 0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(onHighlight ? 0.35 : 0.12)))
+    }
+}
+
+extension LiveSession {
+    /// Asks before ending work in progress: a working or waiting session, or one that's also on the phone.
+    /// An idle session or a leftover stops at once, since Recent brings it back.
+    var stopAsksFirst: Bool { !isLeftover && (state != .idle || isOnPhone) }
 }

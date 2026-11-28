@@ -51,7 +51,7 @@ struct ApprovalCard: View {
                 Spacer(minLength: 4)
                 TimelineView(.periodic(from: .now, by: 30)) { ctx in
                     let m = Int(ctx.date.timeIntervalSince(request.receivedAt) / 60)
-                    Text(m < 1 ? "just now" : Fmt.span(Double(m) * 60)).font(.subheadline).foregroundStyle(.secondary)
+                    Text(m < 1 ? "now" : Fmt.span(Double(m) * 60)).font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(1).fixedSize()
                 }
                 IconButton(symbol: "terminal", help: "Answer in the terminal") { model.openSession(id: request.sessionId) }
@@ -85,7 +85,7 @@ struct ApprovalCard: View {
                 }
                 .frame(maxHeight: roomy ? 520 : expanded ? 260 : 150)
                 .fixedSize(horizontal: false, vertical: true)
-                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.primary.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.primary.opacity(0.05)))
                 .overlay { if risk != nil { RoundedRectangle(cornerRadius: Radius.inner).strokeBorder(Color.red.opacity(0.6)) } }
                 if long {
                     Button(expanded ? "Show less" : "Show all \(lines.count) lines") { withAnimation(Motion.spring(reduced: reduceMotion)) { expanded.toggle() } }
@@ -100,13 +100,13 @@ struct ApprovalCard: View {
         }
         .font(.callout)
         .controlSize(.small)
-        .padding(10)
+        .padding(12)
         .padding(.leading, 3)
         .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))
         .overlay(alignment: .leading) {
             UnevenRoundedRectangle(topLeadingRadius: Radius.row, bottomLeadingRadius: Radius.row).fill(tint).frame(width: 3)
         }
-        .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.5), lineWidth: 1.5) } }
+        .overlay { if selected { RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.5) } }
         .overlay { if let o = outcome { outcomeView(o) } }
         .accessibilityElement(children: .contain)
         .animation(Motion.snappy(reduceMotion), value: outcome)
@@ -122,14 +122,14 @@ struct ApprovalCard: View {
 
     private func outcomeView(_ o: ApprovalAnswer) -> some View {
         let (text, symbol, color): (String, String, Color) = switch o {
-        case .deny: ("Denied", "xmark.circle.fill", .red)
-        case .denyWith: ("Denied, with your reason", "xmark.circle.fill", .red)
-        case .answers: ("Answer sent", "checkmark.circle.fill", .green)
+        case .deny: ("Denied", "xmark.circle.fill", Tone.riskText)
+        case .denyWith: ("Denied, with your reason", "xmark.circle.fill", Tone.riskText)
+        case .answers: ("Answer sent", "checkmark.circle.fill", Tone.okText)
         case .allow(let always, let scope):
             (request.kind == .plan ? "Plan approved" : !always ? "Allowed"
-             : scope == .session ? "Allowed for this session" : scope == .project ? "Always allowed here" : "Always allowed everywhere",
-             "checkmark.circle.fill", .green)
-        case .acceptEdits: ("Allowed", "checkmark.circle.fill", .green)
+             : scope == .session ? "Allowed for this session" : scope == .project ? "Always allowed in \(Fmt.folderTitle(request.cwd))" : "Always allowed in every project",
+             "checkmark.circle.fill", Tone.okText)
+        case .acceptEdits: ("Allowed", "checkmark.circle.fill", Tone.okText)
         case .terminal: ("Answered in the terminal", "terminal.fill", .secondary)
         }
         return ZStack {
@@ -269,8 +269,8 @@ extension ApprovalCard {
     static func scopeTitle(_ scope: RuleScope, cwd: String) -> String {
         switch scope {
         case .session: "For this session"
-        case .project: "Always in \(Fmt.folderTitle(cwd))"
-        case .everywhere: "Always, in every project"
+        case .project: "Always allow in \(Fmt.folderTitle(cwd))"
+        case .everywhere: "Always allow in every project"
         }
     }
 }
@@ -294,7 +294,7 @@ struct QuestionForm: View {
             ForEach(Array(questions.enumerated()), id: \.offset) { _, q in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(q.question).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                    ForEach(Array(q.options.enumerated()), id: \.offset) { _, o in option(q, o) }
+                    ForEach(Array(q.options.enumerated()), id: \.offset) { i, o in option(q, o, key: instant && i < 4 ? "\(i + 1)" : nil) }
                     TextField("Other…", text: Binding(get: { other[q.question] ?? "" }, set: { other[q.question] = $0 }))
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { if instant, !answer(q).isEmpty { send([q.question: answer(q)]) } }
@@ -311,7 +311,7 @@ struct QuestionForm: View {
         }
     }
 
-    @ViewBuilder private func option(_ q: ApprovalRequest.Question, _ o: ApprovalRequest.Option) -> some View {
+    @ViewBuilder private func option(_ q: ApprovalRequest.Question, _ o: ApprovalRequest.Option, key: String?) -> some View {
         let on = picked[q.question]?.contains(o.label) ?? false
         Button {
             if instant { send([q.question: o.label]); return }
@@ -326,10 +326,11 @@ struct QuestionForm: View {
                     if !o.description.isEmpty { Text(o.description).font(.subheadline).foregroundStyle(.secondary) }
                 }
                 Spacer(minLength: 0)
+                if let key { Keycap(key) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: Radius.inner).fill(on ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.05)))
+            .background(RoundedRectangle(cornerRadius: Radius.inner).fill(Color.primary.opacity(on ? 0.12 : 0.05)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -381,9 +382,9 @@ struct QueuedCard: View {
                 }
                 Spacer(minLength: 4)
                 if let risk {
-                    Text("RISKY").font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(Tone.riskText).help("This one \(risk)")
+                    Text("RISKY").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tone.riskText).help("This one \(risk)")
                 }
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color.primary.opacity(0.05)))

@@ -74,7 +74,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             UNNotificationCategory(identifier: "permission-always", actions: [allow, always, deny], intentIdentifiers: []),
             UNNotificationCategory(identifier: "permission-risky", actions: [deny], intentIdentifiers: []),
             UNNotificationCategory(identifier: "plan", actions: [UNNotificationAction(identifier: "allow", title: "Approve plan")], intentIdentifiers: []),
-            UNNotificationCategory(identifier: "limit-switch", actions: [UNNotificationAction(identifier: "switch", title: "Switch idle sessions to Sonnet")], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "limit-switch", actions: [UNNotificationAction(identifier: "switch", title: "Switch to Sonnet")], intentIdentifiers: []),
         ])
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -90,9 +90,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             // A permission prompt mid-task is still the same task, so the start time survives until idle.
             if s.state == .busy, busySince[s.sessionId] == nil { busySince[s.sessionId] = now }
             if s.state == .blocked, prev != nil, prev?.state != .blocked, enabled(Key.waiting), hasApproval?(s.sessionId) != true {
-                post(PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name(s), meta: Self.waitingText(s.waitingFor),
+                post(PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name(s), meta: s.waitingFor.flatMap { $0.isEmpty || $0 == "input needed" ? nil : "Needs you: \($0)" },
                                actions: [show(s.sessionId)]),
-                     body: Self.waitingText(s.waitingFor), sessionId: s.sessionId)
+                     body: Self.waitingReason(s.waitingFor) ?? "Waiting for you", sessionId: s.sessionId)
             }
             // Answered in the terminal: nothing left to wait for.
             if s.state != .blocked, prev?.state == .blocked { Peek.dismiss(id: "wait-\(s.sessionId)") }
@@ -118,9 +118,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         busySince = busySince.filter { ids.contains($0.key) }
     }
 
-    static func waitingText(_ waitingFor: String?) -> String {
-        guard let w = waitingFor, !w.isEmpty, w != "input needed" else { return "waiting for you" }
-        return "needs you: \(w)"
+    /// "Needs you: <reason>" when Claude gave one; nil otherwise, since the eyebrow already says it's waiting.
+    static func waitingReason(_ waitingFor: String?) -> String? {
+        guard let w = waitingFor, !w.isEmpty, w != "input needed" else { return nil }
+        return "Needs you: \(w)"
     }
 
     func usageChanged(_ u: UsageSnapshot, forecast: (LimitWindow) -> Forecast, note: String? = nil, canSwitch: Int = 0) {
@@ -196,10 +197,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func stillWaiting(_ s: LiveSession, name: String, waited: TimeInterval) {
         guard enabled(Key.waiting) else { return }
         let tag = "Still waiting · \(Fmt.span(waited))"
-        var alert = PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name, lines: [Self.waitingText(s.waitingFor)], actions: [show(s.sessionId)])
+        var alert = PeekAlert(id: "wait-\(s.sessionId)", kind: .needs, title: name, lines: Self.waitingReason(s.waitingFor).map { [$0] } ?? [], actions: [show(s.sessionId)])
         alert.tag = tag
         alert.soft = true
-        post(alert, body: "\(tag). \(Self.waitingText(s.waitingFor))", sessionId: s.sessionId)
+        post(alert, body: [tag, Self.waitingReason(s.waitingFor)].compactMap { $0 }.joined(separator: ". "), sessionId: s.sessionId)
     }
 
     func approvalArrived(_ r: ApprovalRequest, name: String, waited: TimeInterval? = nil) {
@@ -224,6 +225,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let review = { [weak self] () -> Void in self?.onReview?() }
         var alert = PeekAlert(id: "approval-\(r.id)", kind: r.risk != nil ? .risky : .needs, title: title)
         alert.tag = waited.map { "Still waiting · \(Fmt.span($0))" } ?? r.risk.map { "Risky · \($0)" }
+            ?? (r.kind == .question ? (r.questions.count == 1 ? "Question" : "\(r.questions.count) questions") : r.kind == .plan ? "Plan to review" : nil)
         alert.soft = waited != nil
         switch r.kind {
         case .permission:
@@ -239,13 +241,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 $0.replacingOccurrences(of: #"^\s*#+\s*"#, with: "", options: .regularExpression)
                     .replacingOccurrences(of: #"^\s*[-*]\s+"#, with: "• ", options: .regularExpression)
             }.filter { !$0.isEmpty }.prefix(3))
-            alert.actions = [.init(title: "Review the plan", style: .primary, run: review)]
+            alert.actions = [.init(title: "Review the plan…", style: .primary, run: review)]
         case .question:
             alert.lines = Array(body.split(separator: "\n").prefix(3).map(String.init))
             if r.questions.count == 1, let q = r.questions.first, !q.multiSelect, (2...3).contains(q.options.count),
                q.options.allSatisfy({ $0.label.count <= 20 }) {
                 alert.actions = q.options.map { o in .init(title: o.label, done: "Answered") { decide(.answers([q.question: o.label])) } }
-                    + [.init(title: "More", style: .primary, run: review)]
+                    + [.init(title: "Answer…", style: .primary, run: review)]
             } else {
                 alert.actions = [.init(title: "Answer", style: .primary, run: review)]
             }
